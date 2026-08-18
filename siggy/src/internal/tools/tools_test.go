@@ -3,6 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,8 +111,41 @@ func TestBuiltinsRegister(t *testing.T) {
 	if _, ok := r.Get("read_pdf"); !ok {
 		t.Fatal("missing read_pdf")
 	}
+	if _, ok := r.Get("web_search"); !ok {
+		t.Fatal("missing web_search")
+	}
 	if _, ok := r.Get("delegate"); ok {
 		t.Fatal("delegate should be absent without delegator")
+	}
+}
+
+func TestWebSearch(t *testing.T) {
+	var gotQ string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQ = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><script>secret()</script><a href="https://example.com/page">Example &amp; Co</a></html>`)
+	}))
+	defer srv.Close()
+	tool := &searchTool{client: srv.Client(), endpoint: srv.URL}
+	got, err := tool.Run(context.Background(), json.RawMessage(`{"query":"golang html"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQ != "golang html" {
+		t.Fatalf("q = %q", gotQ)
+	}
+	if !strings.Contains(got, "status 200") {
+		t.Fatalf("missing status: %q", got)
+	}
+	if !strings.Contains(got, "https://example.com/page") || !strings.Contains(got, "Example & Co") {
+		t.Fatalf("missing visible text/url: %q", got)
+	}
+	if strings.Contains(got, "<a") || strings.Contains(got, "<script") {
+		t.Fatalf("tags leaked: %q", got)
+	}
+	if _, err := tool.Run(context.Background(), json.RawMessage(`{"query":"  "}`)); err == nil {
+		t.Fatal("expected empty query error")
 	}
 }
 

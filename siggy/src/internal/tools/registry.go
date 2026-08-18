@@ -96,6 +96,7 @@ func Builtins(h *harness.Harness, d Delegator) *Registry {
 	r.Register(NewShell(h))
 	r.Register(NewTodo(h))
 	r.Register(NewFetch())
+	r.Register(NewSearch())
 	r.Register(NewRemember(h))
 	r.Register(NewForget(h))
 	r.Register(NewSearchMemory(h))

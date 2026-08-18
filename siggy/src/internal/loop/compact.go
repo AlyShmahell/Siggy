@@ -31,6 +31,7 @@ var bulkyTools = map[string]bool{
 	"list_dir":   true,
 	"shell":      true,
 	"web_fetch":  true,
+	"web_search": true,
 	"read_pdf":   true,
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,6 +84,7 @@ type oaiMessage struct {
 }
 
 type oaiToolCall struct {
+	Index    *int   `json:"index"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -136,8 +138,8 @@ func (c *HTTPClient) Stream(ctx context.Context, req Request) (<-chan Chunk, err
 	body := oaiRequest{Model: c.Model, Stream: true, StreamOptions: &oaiStreamOptions{IncludeUsage: true}}
 	for _, m := range req.Messages {
 		om := oaiMessage{Role: string(m.Role), ToolCallID: m.ToolCallID, Name: m.Name}
-		if m.Content != "" {
-			om.Content = m.Content
+		if c := messageContent(m); c != nil {
+			om.Content = c
 		}
 		for _, tc := range m.ToolCalls {
 			call := oaiToolCall{ID: tc.ID, Type: "function"}
@@ -203,6 +205,8 @@ func (c *HTTPClient) readStream(r io.Reader, out chan<- Chunk) {
 			tc := acc[i]
 			if tc.Args == nil {
 				tc.Args = json.RawMessage(`{}`)
+			} else {
+				tc.Args = mergeArgs(tc.Args)
 			}
 			calls = append(calls, *tc)
 		}
@@ -249,6 +253,9 @@ func (c *HTTPClient) readStream(r io.Reader, out chan<- Chunk) {
 		}
 		for i, tc := range delta.ToolCalls {
 			idx := i
+			if tc.Index != nil {
+				idx = *tc.Index
+			}
 			if existing, ok := acc[idx]; ok {
 				if tc.ID != "" {
 					existing.ID = tc.ID
@@ -272,4 +279,70 @@ func (c *HTTPClient) readStream(r io.Reader, out chan<- Chunk) {
 	if err := sc.Err(); err != nil {
 		out <- Chunk{Err: err}
 	}
+}
+
+func messageContent(m Message) any {
+	if len(m.Parts) == 0 {
+		if m.Content == "" {
+			return nil
+		}
+		return m.Content
+	}
+	var parts []map[string]any
+	if m.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, p := range m.Parts {
+		switch p.Type {
+		case "text":
+			if p.Text != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+			}
+		case "image":
+			mime := p.MIME
+			if mime == "" {
+				mime = "image/jpeg"
+			}
+			url := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
+			parts = append(parts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": url},
+			})
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return parts
+}
+
+func mergeArgs(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid(raw) {
+		return raw
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	merged := map[string]any{}
+	found := false
+	for {
+		var obj map[string]any
+		if err := dec.Decode(&obj); err != nil {
+			break
+		}
+		found = true
+		for k, v := range obj {
+			merged[k] = v
+		}
+	}
+	if !found {
+		return raw
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return raw
+	}
+	return out
 }

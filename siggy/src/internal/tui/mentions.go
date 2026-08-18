@@ -83,6 +83,8 @@ func (m *model) insertMention(path string) {
 		return
 	}
 	m.ta.SetValue(v[:start] + "@" + path + " ")
+	m.selCaret = utf8.RuneCountInString(m.ta.Value())
+	m.selAnchor = m.selCaret
 	m.closeFloat()
 	m.mentions = nil
 }
@@ -112,6 +114,12 @@ func expandMentions(h *harness.Harness, text string) string {
 		if err != nil {
 			continue
 		}
+		if len(data) >= 4 && string(data[:4]) == "%PDF" {
+			continue
+		}
+		if !utf8.Valid(data) {
+			continue
+		}
 		if len(data) > 32*1024 {
 			data = data[:32*1024]
 		}
@@ -122,35 +130,4 @@ func expandMentions(h *harness.Harness, text string) string {
 		b.WriteString("\n</file>")
 	}
 	return b.String()
-}
-
-func (m *model) usageUsed() int {
-	if m.tokensUsed > 0 {
-		return m.tokensUsed
-	}
-	n := 0
-	if m.g != nil && m.g.Engine != nil {
-		for _, msg := range m.g.Engine.Messages {
-			n += utf8.RuneCountInString(msg.Content)
-		}
-	}
-	n += utf8.RuneCountInString(m.ta.Value())
-	return n / 4
-}
-
-func usageGlyph(used, limit int) string {
-	if limit <= 0 || used <= 0 {
-		return "○"
-	}
-	r := float64(used) / float64(limit)
-	switch {
-	case r < 0.25:
-		return "◔"
-	case r < 0.5:
-		return "◑"
-	case r < 0.75:
-		return "◕"
-	default:
-		return "●"
-	}
 }

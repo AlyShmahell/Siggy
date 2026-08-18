@@ -39,11 +39,12 @@ func (t *writeTool) Run(_ context.Context, raw json.RawMessage) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	snapshotFile(t.h, args.Path, path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(path, []byte(args.Content), 0o644); err != nil {
 		return "", err
 	}
-	return "wrote " + t.h.Workspace.Rel(path), nil
+	return formatWriteHunk(t.h.Workspace.Rel(path), args.Content), nil
 }

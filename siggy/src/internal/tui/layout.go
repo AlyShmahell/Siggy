@@ -13,30 +13,33 @@ const (
 	glyphGear  = "⚙"
 	glyphQuit  = "✕"
 	glyphStop  = "⏹"
-
-	contextLimit = 128000
+	glyphBack  = "←"
+	glyphEdit  = "✎"
 )
 
 type regions struct {
-	nav        Rect
-	navPlus    Rect
-	navClock   Rect
-	navGear    Rect
-	navQuit    Rect
-	sidebar    Rect
-	transcript Rect
-	composer   Rect
-	prompt     Rect
-	send       Rect
-	cancel     Rect
-	slash      Rect
-	status     Rect
-	statusMode Rect
-	statusProv Rect
-	modal      Rect
-	listVis    int
-	provVis    int
-	formVis    int
+	nav          Rect
+	navPlus      Rect
+	navClock     Rect
+	navGear      Rect
+	navQuit      Rect
+	navWorkspace Rect
+	navTitle     Rect
+	sidebar      Rect
+	transcript   Rect
+	composer     Rect
+	prompt       Rect
+	send         Rect
+	cancel       Rect
+	usage        Rect
+	slash        Rect
+	status       Rect
+	statusMode   Rect
+	statusProv   Rect
+	modal        Rect
+	listVis      int
+	provVis      int
+	formVis      int
 }
 
 func (m *model) layout() {
@@ -50,7 +53,14 @@ func (m *model) layout() {
 	if h < 10 {
 		h = 24
 	}
+	side := m.onSettings()
+	if m.laidW == w && m.laidH == h && m.width == w && m.height == h && m.laidPage == m.page && m.laidSettings == side {
+		return
+	}
 	m.width, m.height = w, h
+	m.laidW, m.laidH = w, h
+	m.laidPage = m.page
+	m.laidSettings = side
 
 	navH := navRows
 	bodyY := navH
@@ -84,6 +94,7 @@ func (m *model) layout() {
 	m.reg.prompt = Rect{}
 	m.reg.send = Rect{}
 	m.reg.cancel = Rect{}
+	m.reg.usage = Rect{}
 	m.reg.slash = Rect{}
 	m.reg.modal = Rect{}
 	m.reg.statusMode = Rect{}

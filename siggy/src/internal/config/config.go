@@ -32,6 +32,7 @@ type File struct {
 	BaseURL        string      `toml:"base_url"`
 	APIKey         string      `toml:"api_key"`
 	Workspace      string      `toml:"workspace"`
+	ContextWindow  int         `toml:"context_window"`
 	Providers      []Provider  `toml:"providers"`
 	MCP            []MCPServer `toml:"mcp"`
 }
@@ -43,6 +44,7 @@ type Config struct {
 	Mode           string
 	ActiveProvider string
 	Model          string
+	ContextWindow  int
 	Providers      []Provider
 	MCP            []MCPServer
 }
@@ -86,6 +88,9 @@ func Load() (*Config, error) {
 		cfg.Providers = file.Providers
 		cfg.ActiveProvider = file.ActiveProvider
 		cfg.Model = file.Model
+		if file.ContextWindow > 0 {
+			cfg.ContextWindow = file.ContextWindow
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -116,6 +121,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
 	cfg.Workspace = abs
+	if cfg.ContextWindow <= 0 {
+		cfg.ContextWindow = 128000
+	}
 	return cfg, nil
 }
 
@@ -212,6 +220,7 @@ func (c *Config) Save() error {
 		ActiveProvider: c.ActiveProvider,
 		Model:          c.Model,
 		Workspace:      c.Workspace,
+		ContextWindow:  c.ContextWindow,
 		Providers:      c.Providers,
 		MCP:            c.MCP,
 	}

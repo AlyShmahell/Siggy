@@ -9,12 +9,12 @@ compose() {
   (cd "$ROOT/tests" && podman compose -f compose.yaml "$@")
 }
 
-ensure_toolchain() {
-  (cd "$ROOT/toolchains" && podman compose -f compose.yaml build toolchain)
+ensure_images() {
+  (cd "$ROOT/toolchains" && podman compose -f compose.yaml pull)
 }
 
 cmd_build() {
-  ensure_toolchain
+  ensure_images
   compose build tests
 }
 

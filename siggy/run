@@ -13,18 +13,39 @@ compose() {
   (cd "$ROOT/siggy" && podman compose -f compose.yaml "$@")
 }
 
-ensure_toolchain() {
-  (cd "$ROOT/toolchains" && podman compose -f compose.yaml build toolchain)
+ensure_images() {
+  (cd "$ROOT/toolchains" && podman compose -f compose.yaml pull)
 }
 
 cmd_build() {
-  ensure_toolchain
+  ensure_images
   compose build siggy
+}
+
+clipboard_run_args() {
+  local args=()
+  if [[ -n "${DISPLAY:-}" ]]; then
+    args+=(-e "DISPLAY=$DISPLAY")
+  fi
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then
+    args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+    args+=(-e "XDG_RUNTIME_DIR=/tmp")
+    args+=(-v "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:/tmp/$WAYLAND_DISPLAY:ro")
+  fi
+  if [[ -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" ]]; then
+    args+=(-e "XAUTHORITY=/tmp/xauthority")
+    args+=(-v "$XAUTHORITY:/tmp/xauthority:ro")
+  fi
+  if ((${#args[@]} > 0)); then
+    printf '%s\n' "${args[@]}"
+  fi
 }
 
 cmd_tui() {
   cmd_build
-  compose run --rm --service-ports siggy
+  local extra=()
+  mapfile -t extra < <(clipboard_run_args)
+  compose run --rm "${extra[@]}" siggy
 }
 
 cmd_headless() {
@@ -44,12 +65,13 @@ cmd_headless() {
 
 cmd_shell() {
   cmd_build
-  compose run --rm --entrypoint /bin/bash siggy
+  local extra=()
+  mapfile -t extra < <(clipboard_run_args)
+  compose run --rm --entrypoint /bin/bash "${extra[@]}" siggy
 }
 
 cmd_down() {
   compose down --remove-orphans || true
-  (cd "$ROOT/toolchains" && podman compose -f compose.yaml down --remove-orphans) || true
 }
 
 menu_parse_cli "$@"

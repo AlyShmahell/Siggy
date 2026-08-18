@@ -17,9 +17,17 @@ const (
 type Message struct {
 	Role       Role
 	Content    string
+	Parts      []Part
 	ToolCalls  []ToolCall
 	ToolCallID string
 	Name       string
+}
+
+type Part struct {
+	Type string // "text" | "image"
+	Text string
+	MIME string
+	Data []byte
 }
 
 type ToolCall struct {

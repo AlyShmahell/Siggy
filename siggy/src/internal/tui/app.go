@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -33,9 +35,12 @@ const (
 )
 
 type line struct {
-	kind string
-	text string
-	tool string
+	kind  string
+	text  string
+	tool  string
+	model string
+	toks  int
+	rate  float64
 }
 
 type providerForm struct {
@@ -66,9 +71,10 @@ type model struct {
 	vp viewport.Model
 	ta textarea.Model
 
-	lines    []line
-	sessions []string
-	sessIdx  int
+	lines         []line
+	sessions      []string
+	sessionTitles map[string]string
+	sessIdx       int
 
 	hovered Target
 	pressed *Target
@@ -94,6 +100,37 @@ type model struct {
 	provOff      int
 	formOff      int
 	followBottom bool
+
+	selAnchor     int
+	selCaret      int
+	editClip      string
+	lastClickAt   time.Time
+	lastClick     Target
+	dragging      bool
+	dragMoved     bool
+	cursorOn      bool
+	cursorTicking bool
+	lastEdit      time.Time
+	promptOff     int
+
+	focusTrans  bool
+	transPlain  []string
+	transAnchor int
+	transCaret  int
+	streamStart time.Time
+	compToks    int
+
+	fillW, fillH, fillSide int
+	fillBg, fillNav        string
+	fillPanel, fillMain    string
+
+	laidW, laidH int
+	laidPage     page
+	laidSettings bool
+
+	wsRoot   string
+	wsBrowse string
+	wsDirs   []string
 }
 
 type evMsg loop.Event
@@ -108,6 +145,9 @@ const (
 	floatModel
 	floatSessions
 	floatMentions
+	floatRestore
+	floatUsage
+	floatWorkspace
 )
 
 var modeItems = []string{string(harness.ModeChat), string(harness.ModePlan), string(harness.ModeAct)}
@@ -154,16 +194,21 @@ func New(g *graph.Graph, h *harness.Harness, cfg *config.Config) model {
 		reg:         &regions{},
 		status:      "ready",
 		modelHealth: "…",
-		lines: []line{
-			{kind: "sys", text: "session ready"},
-		},
+		cursorOn:    true,
 	}
 	m.scr.hits = m.hits
+	if h != nil && h.Workspace != nil {
+		m.wsRoot = h.Workspace.Root
+	}
 	if cfg == nil {
-		m.cfg = &config.Config{Home: home, ActiveProvider: "env", Model: "gpt-4.1", Providers: []config.Provider{{
+		m.cfg = &config.Config{Home: home, ActiveProvider: "env", Model: "gpt-4.1", ContextWindow: 128000, Providers: []config.Provider{{
 			Name: "env", URL: "https://api.openai.com/v1", Models: []string{"gpt-4.1"}, Protocols: []string{config.ProtocolOpenAI},
 		}}}
 	}
+	if m.g != nil && m.g.Engine != nil && m.cfg != nil && m.cfg.ContextWindow > 0 {
+		m.g.Engine.ContextWindow = m.cfg.ContextWindow
+	}
+	m.loadTranscript("")
 	m.reloadSessions()
 	m.width, m.height = 80, 24
 	m.layout()
@@ -173,14 +218,14 @@ func New(g *graph.Graph, h *harness.Harness, cfg *config.Config) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, enableEnhancedKeys(), m.probeHealth())
+	return tea.Batch(enableEnhancedKeys(), m.probeHealth())
 }
 
 func Run(g *graph.Graph, h *harness.Harness, cfg *config.Config) error {
 	in, restore := programInput()
 	defer restore()
 	defer disableEnhancedKeys()
-	p := tea.NewProgram(New(g, h, cfg), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithInput(in))
+	p := tea.NewProgram(New(g, h, cfg), tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithInput(in))
 	_, err := p.Run()
 	return err
 }
@@ -211,12 +256,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return m.onMouse(msg)
 	case tea.KeyMsg:
-		return m.onKey(msg)
+		next, cmd := m.onKey(msg)
+		nm := next.(model)
+		return nm, tea.Batch(cmd, nm.startBlink())
 	case healthMsg:
 		if msg.status != "" {
 			m.modelHealth = msg.status
 		}
 		return m, nil
+	case titleMsg:
+		if m.h != nil && m.h.Session != nil && m.h.Session.ID == msg.id {
+			m.h.Session.Meta.Title = msg.title
+		}
+		m.reloadSessions()
+		return m, nil
+	case cursorTickMsg:
+		if !m.shouldBlink() {
+			m.cursorOn = true
+			m.cursorTicking = false
+			return m, nil
+		}
+		m.cursorOn = !m.cursorOn
+		return m, tickCursor()
 	}
 	var cmd tea.Cmd
 	if m.page == pageSession && !m.modal() {
@@ -235,6 +296,13 @@ func (m *model) openFloat(k floatKind) {
 	m.listOff = 0
 	if k == floatSessions && len(m.sessions) > 0 {
 		m.palIdx = clamp(m.sessIdx, 0, len(m.sessions)-1) + 1
+	}
+	if k == floatWorkspace {
+		m.wsBrowse = m.wsRoot
+		if m.h != nil && m.h.Workspace != nil {
+			m.wsBrowse = m.h.Workspace.Root
+		}
+		m.loadWorkspaceDirs()
 	}
 }
 
@@ -255,8 +323,20 @@ func (m *model) floatItems() []string {
 	case floatSessions:
 		out := []string{"delete all"}
 		return append(out, m.sessions...)
+	case floatRestore:
+		var out []string
+		for _, rec := range m.checkpoints() {
+			out = append(out, fmt.Sprintf("%d  %s", rec.Seq, rec.Path))
+		}
+		return out
 	case floatMentions:
 		return append([]string{}, m.mentions...)
+	case floatWorkspace:
+		var out []string
+		for _, r := range m.workspaceRows() {
+			out = append(out, r.label)
+		}
+		return out
 	default:
 		return nil
 	}
@@ -329,6 +409,9 @@ func (m *model) currentModelLabel() string {
 func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 	switch ev.Kind {
 	case loop.KindText:
+		if m.streamStart.IsZero() {
+			m.streamStart = time.Now()
+		}
 		m.streaming += ev.Text
 		m.replaceStream()
 	case loop.KindToolStart:
@@ -336,12 +419,16 @@ func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 		m.lines = append(m.lines, line{kind: "tool", tool: ev.Tool, text: ev.Args})
 	case loop.KindToolEnd:
 		text := ev.Text
-		if len(text) > 240 {
-			text = text[:240] + "…"
-		}
 		kind := "ok"
 		if ev.Err != nil {
 			kind = "err"
+		} else if isDiffResult(text) {
+			kind = "diff"
+			if len(text) > 8192 {
+				text = text[:8192] + "…"
+			}
+		} else if len(text) > 240 {
+			text = text[:240] + "…"
 		}
 		m.lines = append(m.lines, line{kind: kind, tool: ev.Tool, text: text})
 	case loop.KindApproval:
@@ -363,7 +450,7 @@ func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 		m.status = "ready"
 		m.modelHealth = "ok"
 		m.syncView()
-		return m, nil
+		return m, m.maybeTitle()
 	case loop.KindNode:
 		m.status = phaseFromNode(ev.Node)
 	case loop.KindMode:
@@ -371,10 +458,13 @@ func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 	case loop.KindSystem:
 		m.lines = append(m.lines, line{kind: "sys", text: ev.Text})
 	case loop.KindUsage:
-		if ev.TotalTokens > 0 {
-			m.tokensUsed = ev.TotalTokens
-		} else if ev.PromptTokens > 0 {
+		if ev.PromptTokens > 0 {
 			m.tokensUsed = ev.PromptTokens
+		} else if ev.TotalTokens > 0 {
+			m.tokensUsed = ev.TotalTokens
+		}
+		if ev.CompletionTokens > 0 {
+			m.compToks = ev.CompletionTokens
 		}
 	}
 	m.syncView()
@@ -392,13 +482,7 @@ func (m *model) syncView() {
 }
 
 func (m *model) resetTranscript(text string) {
-	m.err = ""
-	m.streaming = ""
-	m.followBottom = true
-	m.lines = []line{
-		{kind: "sys", text: "session ready"},
-		{kind: "sys", text: text},
-	}
+	m.loadTranscript(text)
 }
 
 func (m *model) leaveSessionPage() {
@@ -408,32 +492,74 @@ func (m *model) leaveSessionPage() {
 
 func (m *model) flushStream() {
 	if m.streaming == "" {
+		m.streamStart = time.Time{}
+		m.compToks = 0
 		return
 	}
 	m.replaceStream()
+	m.stampReply()
 	m.streaming = ""
+	m.streamStart = time.Time{}
+	m.compToks = 0
 }
 
 func (m *model) replaceStream() {
-	if len(m.lines) > 0 && m.lines[len(m.lines)-1].kind == "asst-live" {
+	if m.hasTransSel() {
+		m.transCollapse()
+	}
+	if len(m.lines) > 0 && m.lines[len(m.lines)-1].kind == "asst-live" && m.lines[len(m.lines)-1].model == "" {
 		m.lines[len(m.lines)-1].text = m.streaming
 		return
 	}
 	m.lines = append(m.lines, line{kind: "asst-live", text: m.streaming})
 }
 
-func (m *model) reloadSessions() {
-	ids, err := harness.ListSessions(m.home)
-	if err != nil {
-		m.sessions = nil
+func (m *model) stampReply() {
+	if len(m.lines) == 0 || m.lines[len(m.lines)-1].kind != "asst-live" {
 		return
 	}
-	m.sessions = ids
-	for i, id := range ids {
-		if m.h != nil && m.h.Session != nil && id == m.h.Session.ID {
+	text := m.lines[len(m.lines)-1].text
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	toks := m.compToks
+	if toks <= 0 {
+		toks = utf8.RuneCountInString(text) / 4
+	}
+	elapsed := time.Since(m.streamStart).Seconds()
+	if m.streamStart.IsZero() {
+		return
+	}
+	if elapsed < 0.001 {
+		elapsed = 0.001
+	}
+	m.lines[len(m.lines)-1].model = m.currentModelLabel()
+	m.lines[len(m.lines)-1].toks = toks
+	m.lines[len(m.lines)-1].rate = float64(toks) / elapsed
+}
+
+func (m *model) reloadSessions() {
+	hash := ""
+	if m.h != nil && m.h.Workspace != nil {
+		hash = harness.HashWorkspace(m.h.Workspace.Root)
+	}
+	metas, err := harness.ListSessionMetas(m.home, hash)
+	if err != nil {
+		m.sessions = nil
+		m.sessionTitles = nil
+		return
+	}
+	ids := make([]string, 0, len(metas))
+	titles := make(map[string]string, len(metas))
+	for i, meta := range metas {
+		ids = append(ids, meta.ID)
+		titles[meta.ID] = sessionTitle(meta.Title)
+		if m.h != nil && m.h.Session != nil && meta.ID == m.h.Session.ID {
 			m.sessIdx = i
 		}
 	}
+	m.sessions = ids
+	m.sessionTitles = titles
 }
 
 func (m *model) applyClient() {
@@ -442,6 +568,9 @@ func (m *model) applyClient() {
 	}
 	p := m.cfg.Active()
 	m.g.Engine.LLM = llm.NewHTTP(p.URL, p.APIKey, m.cfg.Model)
+	if m.cfg.ContextWindow > 0 {
+		m.g.Engine.ContextWindow = m.cfg.ContextWindow
+	}
 }
 
 func (m *model) afterClientChange() tea.Cmd {
@@ -572,6 +701,7 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.ta.Reset()
+	m.selAnchor, m.selCaret = 0, 0
 	m.closeFloat()
 	if strings.HasPrefix(text, "/") {
 		return m.command(text)
@@ -582,10 +712,11 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 }
 
 func (m model) command(text string) (tea.Model, tea.Cmd) {
-	cmd, _, _ := strings.Cut(text, " ")
+	cmd, arg, _ := strings.Cut(text, " ")
+	arg = strings.TrimSpace(arg)
 	switch cmd {
 	case "/help":
-		m.lines = append(m.lines, line{kind: "sys", text: " /help /new /resume /plan /act /allow /providers /connect /quit"})
+		m.lines = append(m.lines, line{kind: "sys", text: " /help /new /resume /plan /act /allow /providers /connect /compress /compress-fast /export /restore /branch /rewind /remember /forget /memory /dream /quit"})
 	case "/new":
 		return m.activate(Target{Kind: KindSidebarNew})
 	case "/resume":
@@ -606,6 +737,30 @@ func (m model) command(text string) (tea.Model, tea.Cmd) {
 		m.tab = settingsTabProviders
 		m.provIdx = 0
 		m.provOff = 0
+	case "/compress":
+		m.runCompact(false)
+	case "/compress-fast":
+		m.runCompact(true)
+	case "/export":
+		m.exportSession(arg)
+	case "/restore":
+		if len(m.checkpoints()) == 0 {
+			m.lines = append(m.lines, line{kind: "sys", text: "no file checkpoints"})
+		} else {
+			m.openFloat(floatRestore)
+		}
+	case "/branch":
+		m.branchSession()
+	case "/rewind":
+		m.rewindSession(arg)
+	case "/remember":
+		m.rememberFact(arg)
+	case "/forget":
+		m.forgetMemory(arg)
+	case "/memory":
+		m.showMemory()
+	case "/dream":
+		m.dreamMemory()
 	case "/quit":
 		return m, tea.Quit
 	default:

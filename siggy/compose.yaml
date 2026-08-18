@@ -8,12 +8,20 @@ services:
     tty: true
     working_dir: /workspace
     userns_mode: keep-id
+    network_mode: host
+    security_opt:
+      - label=disable
     volumes:
       - ${SIGGY_WORKSPACE:-..}:/workspace:Z
       - ${SIGGY_HOME:-${HOME}/.siggy}:/home/siggy/.siggy:Z
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
     environment:
       HOME: /home/siggy
       SIGGY_HOME: /home/siggy/.siggy
+      DISPLAY: ${DISPLAY:-}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-}
+      XDG_RUNTIME_DIR: /tmp
+      XAUTHORITY: ${XAUTHORITY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}

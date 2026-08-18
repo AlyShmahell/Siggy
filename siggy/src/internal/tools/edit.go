@@ -45,6 +45,7 @@ func (t *editTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	snapshotFile(t.h, args.Path, path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -61,5 +62,5 @@ func (t *editTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
 		return "", err
 	}
-	return "edited " + t.h.Workspace.Rel(path), nil
+	return formatEditHunk(t.h.Workspace.Rel(path), text, args.OldString, args.NewString), nil
 }

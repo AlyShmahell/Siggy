@@ -71,6 +71,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if again.ActiveProvider != "work" || again.Model != "mini" {
 		t.Fatalf("active=%q model=%q", again.ActiveProvider, again.Model)
 	}
+	if again.ContextWindow != 128000 {
+		t.Fatalf("context window default = %d", again.ContextWindow)
+	}
 	if _, err := os.Stat(filepath.Join(home, "config.toml")); err != nil {
 		t.Fatal(err)
 	}
@@ -119,5 +122,24 @@ func TestLoadEnvOverridesModel(t *testing.T) {
 	}
 	if cfg.Model != "from-env" {
 		t.Fatalf("env should win, got %q", cfg.Model)
+	}
+}
+
+func TestLoadContextWindow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SIGGY_HOME", home)
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	body := []byte("context_window = 64000\n")
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextWindow != 64000 {
+		t.Fatalf("context_window = %d", cfg.ContextWindow)
 	}
 }

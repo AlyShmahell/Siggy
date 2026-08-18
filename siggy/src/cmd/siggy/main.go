@@ -14,6 +14,7 @@ import (
 	"siggy/src/internal/llm"
 	"siggy/src/internal/loop"
 	"siggy/src/internal/mcp"
+	sysprompt "siggy/src/internal/prompt"
 	"siggy/src/internal/subagent"
 	"siggy/src/internal/tools"
 	"siggy/src/internal/tui"
@@ -33,6 +34,7 @@ func run() error {
 	yes := flag.Bool("yes", false, "auto-approve write/shell/network tools")
 	resume := flag.String("resume", "", "resume session id")
 	plan := flag.Bool("plan", false, "start in plan mode")
+	exportFmt := flag.String("export", "", "export resumed session as jsonl or md and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -55,6 +57,9 @@ func run() error {
 	}
 	defer h.Session.Close()
 	h.Mode = harness.ParseMode(cfg.Mode)
+	if err := sysprompt.Seed(sysprompt.DefaultSource(), sysprompt.DestDir(cfg.Home)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: prompts: %v\n", err)
+	}
 
 	if *resume != "" {
 		sess, err := harness.OpenSession(cfg.Home, *resume)
@@ -99,6 +104,13 @@ func run() error {
 	} else {
 		g = graph.New(client, reg, h, "")
 	}
+	if cfg.ContextWindow > 0 {
+		g.Engine.ContextWindow = cfg.ContextWindow
+	}
+
+	if *exportFmt != "" {
+		return exportSession(h, *exportFmt)
+	}
 
 	if *prompt != "" {
 		return runHeadless(ctx, g, *prompt, *yes)
@@ -137,4 +149,23 @@ func runHeadless(ctx context.Context, g *graph.Graph, prompt string, yes bool) e
 			fmt.Fprintln(os.Stdout)
 		}
 	})
+}
+
+func exportSession(h *harness.Harness, format string) error {
+	if h == nil || h.Session == nil {
+		return fmt.Errorf("no session")
+	}
+	recs := h.Session.Records()
+	switch strings.ToLower(format) {
+	case "md", "markdown":
+		_, err := os.Stdout.WriteString(harness.ExportMarkdown(recs))
+		return err
+	default:
+		raw, err := harness.ExportJSONL(recs)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(raw)
+		return err
+	}
 }

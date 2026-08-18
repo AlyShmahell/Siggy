@@ -1,5 +1,6 @@
-FROM localhost/siggy-toolchain:latest AS build
+FROM docker.io/library/golang:1.25-bookworm AS build
 
+ENV CGO_ENABLED=0
 WORKDIR /src
 COPY VERSION ./VERSION
 COPY siggy/go.mod siggy/go.sum ./
@@ -10,10 +11,11 @@ RUN go mod download \
        -o /out/siggy ./src/cmd/siggy
 
 FROM docker.io/library/alpine:3.21
-RUN apk add --no-cache ca-certificates git ripgrep bash \
+RUN apk add --no-cache ca-certificates git ripgrep bash xclip wl-clipboard poppler-utils \
     && adduser -D -u 1000 -s /bin/bash siggy
 
 COPY --from=build /out/siggy /usr/local/bin/siggy
+COPY siggy/prompts /usr/share/siggy/prompts
 USER siggy
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/siggy"]

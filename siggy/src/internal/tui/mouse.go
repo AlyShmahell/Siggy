@@ -2,19 +2,47 @@ package tui
 
 import (
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"siggy/src/internal/config"
 	"siggy/src/internal/harness"
+	"siggy/src/internal/llm"
 )
 
 func (m model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	t, ok := m.hits.At(msg.X, msg.Y)
+
+	if m.dragging && m.pressed != nil && m.pressed.Kind == KindTranscript && m.approval == nil {
+		if msg.Action == tea.MouseActionMotion {
+			off := m.transcriptClickOffset(msg.X, msg.Y)
+			if off != m.transCaret {
+				m.dragMoved = true
+			}
+			m.transCaret = off
+			return m, nil
+		}
+	}
+
+	if m.dragging && m.pressed != nil && isTextInput(*m.pressed) && m.approval == nil {
+		if msg.Action == tea.MouseActionMotion {
+			off := m.clickOffset(*m.pressed, msg.X, msg.Y)
+			if off != m.selCaret {
+				m.dragMoved = true
+			}
+			m.placeCaret(off, true)
+			return m, nil
+		}
+	}
+
 	if msg.Action == tea.MouseActionMotion || msg.Button == tea.MouseButtonNone {
 		if ok {
 			m.hovered = t
-			m.hoverSelect(t)
+			if !m.dragging {
+				m.hoverSelect(t)
+			}
 		} else {
 			m.hovered = Target{}
 		}
@@ -24,6 +52,8 @@ func (m model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 		return m.onWheel(msg, t, ok)
+	case tea.MouseButtonRight:
+		return m, nil
 	}
 
 	if msg.Button != tea.MouseButtonLeft {
@@ -31,12 +61,56 @@ func (m model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Action {
 	case tea.MouseActionPress:
+		if ok && t.Kind == KindTranscript && m.approval == nil {
+			m.focusTranscript()
+			now := time.Now()
+			dbl := !m.dragMoved && sameTarget(m.lastClick, t) && !m.lastClickAt.IsZero() && now.Sub(m.lastClickAt) < dblClickMax
+			if dbl {
+				m.transSelectAll()
+			} else {
+				off := m.transcriptClickOffset(msg.X, msg.Y)
+				m.transAnchor = off
+				m.transCaret = off
+			}
+			m.lastClickAt = now
+			m.lastClick = t
+			cp := t
+			m.pressed = &cp
+			m.dragging = true
+			m.dragMoved = false
+			return m, nil
+		}
+		if ok && isTextInput(t) && m.approval == nil {
+			m.blurTranscript()
+			m.focusTextInput(t)
+			now := time.Now()
+			dbl := !m.dragMoved && sameTarget(m.lastClick, t) && !m.lastClickAt.IsZero() && now.Sub(m.lastClickAt) < dblClickMax
+			if dbl {
+				m.selectAll()
+			} else {
+				m.placeCaret(m.clickOffset(t, msg.X, msg.Y), msg.Shift)
+			}
+			m.lastClickAt = now
+			m.lastClick = t
+			cp := t
+			m.pressed = &cp
+			m.dragging = true
+			m.dragMoved = false
+			return m, nil
+		}
 		if ok {
 			cp := t
 			m.pressed = &cp
 			m.hoverSelect(t)
 		}
 	case tea.MouseActionRelease:
+		wasDrag := m.dragging
+		textPress := m.pressed != nil && (isTextInput(*m.pressed) || m.pressed.Kind == KindTranscript)
+		m.dragging = false
+		if wasDrag && textPress {
+			m.pressed = nil
+			return m, nil
+		}
 		if m.pressed != nil && ok && sameTarget(*m.pressed, t) {
 			m.pressed = nil
 			return m.activate(t)
@@ -65,16 +139,25 @@ func (m *model) hoverSelect(t Target) {
 		if m.float == floatSessions {
 			m.palIdx = 0
 		}
+	case KindWorkspaceUse:
+		m.palIdx = 0
+	case KindWorkspaceUp:
+		if m.wsCanUp() {
+			m.palIdx = 1
+		}
+	case KindWorkspaceDir:
+		off := 1
+		if m.wsCanUp() {
+			off = 2
+		}
+		m.palIdx = off + t.Index
 	case KindProviderRow:
 		m.provIdx = t.Index
 	case KindFormField:
-		m.form.field = t.Index
 		if t.Index >= 10 && t.Index < 10+len(protocolOptions) {
 			m.form.protoIdx = t.Index - 10
 		}
 	case KindFormListItem:
-		m.form.field = 3
-		m.form.modelIdx = t.Index
 	}
 }
 
@@ -83,7 +166,7 @@ func (m model) onWheel(msg tea.MouseMsg, t Target, ok bool) (tea.Model, tea.Cmd)
 	if msg.Button == tea.MouseButtonWheelUp {
 		dir = -1
 	}
-	if m.modal() && ok && (t.Kind == KindModalItem || t.Kind == KindMention || t.Kind == KindApprove || t.Kind == KindNone || t.Kind == KindSidebarSession || t.Kind == KindSidebarDelete || t.Kind == KindSidebarDeleteAll) {
+	if m.modal() && ok && (t.Kind == KindModalItem || t.Kind == KindMention || t.Kind == KindApprove || t.Kind == KindNone || t.Kind == KindSidebarSession || t.Kind == KindSidebarDelete || t.Kind == KindSidebarDeleteAll || t.Kind == KindWorkspaceUse || t.Kind == KindWorkspaceUp || t.Kind == KindWorkspaceDir) {
 		n := len(m.floatItems())
 		if m.float == floatSessions {
 			n = len(m.sessions)
@@ -143,6 +226,21 @@ func (m model) activate(t Target) (tea.Model, tea.Cmd) {
 		m.provOff = 0
 	case KindNavQuit:
 		return m, tea.Quit
+	case KindNavWorkspace:
+		if m.float == floatWorkspace {
+			m.closeFloat()
+		} else {
+			m.openFloat(floatWorkspace)
+		}
+	case KindNavTitle:
+		m.closeFloat()
+		m.page = pageSession
+	case KindWorkspaceUse:
+		m.applyWorkspace()
+	case KindWorkspaceUp:
+		m.workspaceUp()
+	case KindWorkspaceDir:
+		m.enterWorkspaceDir(t.Index)
 	case KindSidebarProviders:
 		m.form.err = ""
 		m.page = pageSettings
@@ -163,6 +261,7 @@ func (m model) activate(t Target) (tea.Model, tea.Cmd) {
 		m.deleteAllSessions()
 		m.closeFloat()
 	case KindPrompt:
+		m.blurTranscript()
 		m.ta.Focus()
 	case KindCancel:
 		if m.running && m.cancel != nil {
@@ -178,6 +277,12 @@ func (m model) activate(t Target) (tea.Model, tea.Cmd) {
 		m.openFloat(floatMode)
 	case KindComposerModel:
 		m.openFloat(floatModel)
+	case KindUsage:
+		if m.float == floatUsage {
+			m.closeFloat()
+		} else {
+			m.openFloat(floatUsage)
+		}
 	case KindApprove:
 		m.decide(t.Index)
 	case KindModalItem:
@@ -199,9 +304,15 @@ func (m model) activate(t Target) (tea.Model, tea.Cmd) {
 	case KindProviderNew:
 		m.openForm(config.Provider{Protocols: []string{config.ProtocolOpenAI}, Models: []string{""}})
 	case KindProviderEdit:
-		if m.provIdx >= 0 && m.provIdx < len(m.cfg.Providers) {
-			m.openForm(m.cfg.Providers[m.provIdx])
+		idx := t.Index
+		if idx < 0 {
+			idx = m.provIdx
 		}
+		if idx >= 0 && idx < len(m.cfg.Providers) {
+			m.openForm(m.cfg.Providers[idx])
+		}
+	case KindProviderDelete:
+		m.deleteProvider(t.Index)
 	case KindFormBack, KindFormCancel:
 		m.form.err = ""
 		if m.page == pageProviderForm {
@@ -274,11 +385,19 @@ func (m model) activateFloatItem(i int) (tea.Model, tea.Cmd) {
 			m.openSession(m.sessions[i-1])
 		}
 		m.closeFloat()
+	case floatRestore:
+		m.restoreCheckpointAt(i)
+		m.closeFloat()
 	case floatMentions:
 		if i >= 0 && i < len(m.mentions) {
 			m.insertMention(m.mentions[i])
 		}
 		m.closeFloat()
+	case floatWorkspace:
+		rows := m.workspaceRows()
+		if i >= 0 && i < len(rows) {
+			return m.activate(Target{Kind: rows[i].kind, Index: rows[i].index})
+		}
 	default:
 		m.closeFloat()
 	}
@@ -305,13 +424,25 @@ func (m *model) openSession(id string) {
 	}
 	m.h.Session = sess
 	m.g.Resume(sess.Records())
+	if m.cfg != nil && m.g.Engine != nil {
+		m.g.Engine.ContextWindow = m.cfg.ContextWindow
+	}
 	m.resetTranscript("resumed " + id)
 	m.reloadSessions()
 	m.page = pageSession
+	m.syncView()
 }
 
 func (m *model) startFreshSession() {
-	sess, err := harness.NewSession(m.home)
+	cwd, hash := "", ""
+	if m.h != nil && m.h.Workspace != nil {
+		cwd = m.h.Workspace.Root
+		hash = harness.HashWorkspace(cwd)
+	}
+	sess, err := harness.NewSessionMeta(m.home, harness.SessionMeta{
+		CWD:           cwd,
+		WorkspaceHash: hash,
+	})
 	if err != nil {
 		m.err = err.Error()
 		return
@@ -320,12 +451,22 @@ func (m *model) startFreshSession() {
 		_ = m.h.Session.Close()
 	}
 	m.h.Session = sess
-	if m.g != nil && m.g.Engine != nil && len(m.g.Engine.Messages) > 0 {
-		m.g.Engine.Messages = m.g.Engine.Messages[:1]
+	if m.g != nil && m.g.Engine != nil {
+		sys := ""
+		if len(m.g.Engine.Messages) > 0 && m.g.Engine.Messages[0].Role == llm.RoleSystem {
+			sys = m.g.Engine.Messages[0].Content
+		}
+		if sys != "" {
+			_ = sess.Append(harness.Record{Type: "system", Text: sys})
+			m.g.Engine.Messages = []llm.Message{{Role: llm.RoleSystem, Content: sys}}
+		} else {
+			m.g.Engine.Messages = nil
+		}
 	}
 	m.resetTranscript("new session " + sess.ID)
 	m.reloadSessions()
 	m.page = pageSession
+	m.syncView()
 }
 
 func (m *model) deleteSessionAt(i int) {
@@ -377,6 +518,28 @@ func (m *model) deleteFormModel(i int) {
 	m.form.modelIdx = clamp(m.form.modelIdx, 0, len(m.form.models)-1)
 }
 
+func (m *model) deleteProvider(i int) {
+	if m.cfg == nil || i < 0 || i >= len(m.cfg.Providers) {
+		return
+	}
+	name := m.cfg.Providers[i].Name
+	m.cfg.Providers = append(m.cfg.Providers[:i], m.cfg.Providers[i+1:]...)
+	if m.cfg.ActiveProvider == name {
+		if len(m.cfg.Providers) > 0 {
+			_ = m.cfg.SetActive(m.cfg.Providers[0].Name)
+		} else {
+			m.cfg.ActiveProvider = ""
+		}
+	}
+	if len(m.cfg.Providers) == 0 {
+		m.provIdx = 0
+	} else {
+		m.provIdx = clamp(m.provIdx, 0, len(m.cfg.Providers)-1)
+	}
+	_ = m.cfg.Save()
+	m.applyClient()
+}
+
 func (m *model) openForm(p config.Provider) {
 	models := append([]string{}, p.Models...)
 	if len(models) == 0 {
@@ -395,6 +558,8 @@ func (m *model) openForm(p config.Provider) {
 		protocols: protos,
 		field:     0,
 	}
+	m.selCaret = utf8.RuneCountInString(p.Name)
+	m.selAnchor = m.selCaret
 	m.formOff = 0
 	m.page = pageProviderForm
 }

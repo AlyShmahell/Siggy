@@ -87,14 +87,18 @@ func (r *Registry) Specs() []llm.ToolSpec {
 func Builtins(h *harness.Harness, d Delegator) *Registry {
 	r := NewRegistry()
 	r.Register(NewRead(h))
+	r.Register(NewReadPDF(h))
 	r.Register(NewWrite(h))
 	r.Register(NewEdit(h))
 	r.Register(NewList(h))
 	r.Register(NewGlob(h))
 	r.Register(NewGrep(h))
 	r.Register(NewShell(h))
-	r.Register(NewTodo())
+	r.Register(NewTodo(h))
 	r.Register(NewFetch())
+	r.Register(NewRemember(h))
+	r.Register(NewForget(h))
+	r.Register(NewSearchMemory(h))
 	if d != nil {
 		r.Register(NewDelegate(d))
 	}

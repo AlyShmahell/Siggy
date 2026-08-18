@@ -1,7 +1,5 @@
 services:
-  toolchain:
-    image: localhost/siggy-toolchain:latest
-    build:
-      context: ..
-      dockerfile: toolchains/containerfile
-    command: ["true"]
+  golang:
+    image: docker.io/library/golang:1.25-bookworm
+  alpine:
+    image: docker.io/library/alpine:3.21

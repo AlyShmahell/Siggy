@@ -36,13 +36,20 @@ const (
 	KindProviderRow
 	KindProviderNew
 	KindProviderEdit
+	KindProviderDelete
 	KindSidebarDelete
 	KindSidebarDeleteAll
 	KindFormDeleteModel
 	KindNavClock
 	KindNavGear
 	KindNavQuit
+	KindNavWorkspace
+	KindNavTitle
+	KindWorkspaceUse
+	KindWorkspaceUp
+	KindWorkspaceDir
 	KindMention
+	KindUsage
 )
 
 type Rect struct {

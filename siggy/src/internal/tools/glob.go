@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,18 +19,20 @@ func NewGlob(h *harness.Harness) Tool { return &globTool{h: h} }
 
 func (t *globTool) Name() string { return "glob" }
 func (t *globTool) Description() string {
-	return "Find workspace files matching a glob pattern (e.g. **/*.go)."
+	return "Find workspace files matching a glob pattern (e.g. **/*.go). Optional path limits the search to a directory."
 }
 func (t *globTool) Risk() harness.Risk { return harness.RiskRead }
 func (t *globTool) Schema() json.RawMessage {
 	return objectSchema(map[string]any{
-		"pattern": map[string]any{"type": "string"},
+		"pattern": map[string]any{"type": "string", "description": "Glob relative to path or workspace, e.g. **/*.go"},
+		"path":    map[string]any{"type": "string", "description": "Directory to search, default workspace root"},
 	}, []string{"pattern"})
 }
 
 func (t *globTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	args, err := decode[struct {
 		Pattern string `json:"pattern"`
+		Path    string `json:"path"`
 	}](raw)
 	if err != nil {
 		return "", err
@@ -38,8 +41,15 @@ func (t *globTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	if pattern == "" {
 		return "", nil
 	}
+	start, err := t.h.Workspace.Resolve(args.Path)
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Stat(start); err == nil && !info.IsDir() {
+		start = filepath.Dir(start)
+	}
 	var matches []string
-	err = filepath.WalkDir(t.h.Workspace.Root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

@@ -15,7 +15,10 @@ func New(workspace, home string, autoApprove bool) (*Harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := NewSession(home)
+	sess, err := NewSessionMeta(home, SessionMeta{
+		CWD:           ws.Root,
+		WorkspaceHash: HashWorkspace(ws.Root),
+	})
 	if err != nil {
 		return nil, err
 	}

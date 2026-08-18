@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
 	"siggy/src/internal/harness"
+	"siggy/src/internal/llm"
 )
 
 type Tool interface {
@@ -13,6 +15,10 @@ type Tool interface {
 	Schema() json.RawMessage
 	Risk() harness.Risk
 	Run(ctx context.Context, args json.RawMessage) (string, error)
+}
+
+type Visual interface {
+	RunVisual(ctx context.Context, args json.RawMessage) (string, []llm.Part, error)
 }
 
 type Delegator interface {
@@ -41,6 +47,38 @@ func decode[T any](raw json.RawMessage) (T, error) {
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}
+	raw = mergeArgs(raw)
 	err := json.Unmarshal(raw, &v)
 	return v, err
+}
+
+func mergeArgs(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid(raw) {
+		return raw
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	merged := map[string]any{}
+	found := false
+	for {
+		var obj map[string]any
+		if err := dec.Decode(&obj); err != nil {
+			break
+		}
+		found = true
+		for k, v := range obj {
+			merged[k] = v
+		}
+	}
+	if !found {
+		return raw
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return raw
+	}
+	return out
 }

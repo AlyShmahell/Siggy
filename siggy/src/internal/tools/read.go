@@ -46,6 +46,9 @@ func (t *readTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if len(data) >= 4 && string(data[:4]) == "%PDF" {
+		return "", fmt.Errorf("%s is a PDF; use read_pdf", args.Path)
+	}
 	if !utf8.Valid(data) {
 		return "", fmt.Errorf("%s is not valid UTF-8", args.Path)
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"siggy/src/internal/prompt"
 )
 
 type Spec struct {
@@ -21,20 +23,17 @@ func Builtins() []Spec {
 		{
 			Name:        "explore",
 			Description: "Read-only scout that maps a codebase and reports findings.",
-			Tools:       []string{"read_file", "list_dir", "glob", "grep"},
-			Prompt:      "You are an explore subagent. Only read and search. Return a concise map of what you found.",
+			Tools:       []string{"read_file", "read_pdf", "list_dir", "glob", "grep"},
 		},
 		{
 			Name:        "implement",
 			Description: "Makes focused code changes for a single task.",
-			Tools:       []string{"read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "shell", "todo_write"},
-			Prompt:      "You are an implement subagent. Make the smallest change that completes the task. Summarize files you touched.",
+			Tools:       []string{"read_file", "read_pdf", "write_file", "edit_file", "list_dir", "glob", "grep", "shell", "todo_write"},
 		},
 		{
 			Name:        "review",
 			Description: "Reviews local files and reports risks.",
-			Tools:       []string{"read_file", "list_dir", "glob", "grep"},
-			Prompt:      "You are a review subagent. Report bugs, risks, and missing tests. Do not modify files.",
+			Tools:       []string{"read_file", "read_pdf", "list_dir", "glob", "grep"},
 		},
 	}
 }
@@ -69,10 +68,10 @@ func LoadProject(workspace string) ([]Spec, error) {
 	return specs, nil
 }
 
-func Resolve(workspace, name string) (Spec, error) {
+func Resolve(workspace, home, name string) (Spec, error) {
 	for _, s := range Builtins() {
 		if s.Name == name {
-			return s, nil
+			return withAgentPrompt(home, s), nil
 		}
 	}
 	proj, err := LoadProject(workspace)
@@ -81,8 +80,16 @@ func Resolve(workspace, name string) (Spec, error) {
 	}
 	for _, s := range proj {
 		if s.Name == name {
-			return s, nil
+			return withAgentPrompt(home, s), nil
 		}
 	}
 	return Spec{}, fmt.Errorf("unknown subagent %q", name)
+}
+
+func withAgentPrompt(home string, s Spec) Spec {
+	if strings.TrimSpace(s.Prompt) != "" {
+		return s
+	}
+	s.Prompt = prompt.Agent(home, s.Name)
+	return s
 }

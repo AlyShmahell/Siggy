@@ -27,6 +27,7 @@ type Event struct {
 	Node         string
 	Mode         string
 	Approval     *harness.ApprovalRequest
-	PromptTokens int
-	TotalTokens  int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }

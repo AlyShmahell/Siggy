@@ -33,7 +33,7 @@ func TestDelegateExplore(t *testing.T) {
 }
 
 func TestUnknownAgent(t *testing.T) {
-	_, err := Resolve(t.TempDir(), "nope")
+	_, err := Resolve(t.TempDir(), t.TempDir(), "nope")
 	if err == nil {
 		t.Fatal("expected error")
 	}

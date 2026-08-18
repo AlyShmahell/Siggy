@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,40 @@ func TestHTTPStreamTextAndTools(t *testing.T) {
 	var args map[string]string
 	if err := json.Unmarshal(calls[0].Args, &args); err != nil || args["path"] != "a" {
 		t.Fatalf("args = %s %v", calls[0].Args, err)
+	}
+}
+
+func TestHTTPStreamToolCallIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"glob\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"pattern\\\":\\\"**/*.go\\\"}\"}}]}}],\"finish_reason\":\"tool_calls\"}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(srv.URL, "k", "m")
+	ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: "x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, calls, err := Collect(ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %#v", calls)
+	}
+	if calls[0].Name != "glob" || calls[1].Name != "list_dir" {
+		t.Fatalf("names = %s %s", calls[0].Name, calls[1].Name)
+	}
+	var args map[string]string
+	if err := json.Unmarshal(calls[0].Args, &args); err != nil {
+		t.Fatal(err)
+	}
+	if args["path"] != "." || args["pattern"] != "**/*.go" {
+		t.Fatalf("merged args = %s", calls[0].Args)
 	}
 }
 
@@ -115,5 +150,51 @@ func TestHTTPPingMissingEndpoint(t *testing.T) {
 	c := NewHTTP(srv.URL, "k", "gpt-4.1")
 	if got := c.Ping(context.Background()); got != "…" {
 		t.Fatalf("404 should be unverified, got %q", got)
+	}
+}
+
+func TestHTTPStreamImageParts(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(srv.URL, "k", "m")
+	msg := Message{
+		Role:    RoleTool,
+		Content: "Rendered pages 1 of paper.pdf (1 pages). Images attached for a vision model.",
+		Parts:   []Part{{Type: "image", MIME: "image/jpeg", Data: []byte{0xff, 0xd8, 0xff}}},
+	}
+	ch, err := c.Stream(context.Background(), Request{Messages: []Message{msg}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = Collect(ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %#v", body["messages"])
+	}
+	content, _ := msgs[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %#v", msgs[0])
+	}
+	text, _ := content[0].(map[string]any)
+	if text["type"] != "text" {
+		t.Fatalf("text part = %#v", text)
+	}
+	img, _ := content[1].(map[string]any)
+	if img["type"] != "image_url" {
+		t.Fatalf("image part = %#v", img)
+	}
+	url, _ := img["image_url"].(map[string]any)["url"].(string)
+	if !strings.HasPrefix(url, "data:image/jpeg;base64,") {
+		t.Fatalf("url = %q", url)
 	}
 }

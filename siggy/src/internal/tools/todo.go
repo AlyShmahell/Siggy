@@ -17,11 +17,12 @@ type todoItem struct {
 }
 
 type todoTool struct {
+	h     *harness.Harness
 	mu    sync.Mutex
 	items []todoItem
 }
 
-func NewTodo() Tool { return &todoTool{} }
+func NewTodo(h *harness.Harness) Tool { return &todoTool{h: h} }
 
 func (t *todoTool) Name() string { return "todo_write" }
 func (t *todoTool) Description() string {
@@ -55,6 +56,13 @@ func (t *todoTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	t.mu.Lock()
 	t.items = args.Items
 	t.mu.Unlock()
+	if t.h != nil && t.h.Session != nil {
+		var snap []harness.TodoSnap
+		for _, it := range args.Items {
+			snap = append(snap, harness.TodoSnap{ID: it.ID, Content: it.Content, Status: it.Status})
+		}
+		_ = t.h.Session.Append(harness.Record{Type: "todo", Todos: snap})
+	}
 	var b strings.Builder
 	for _, it := range args.Items {
 		fmt.Fprintf(&b, "[%s] %s (%s)\n", it.Status, it.Content, it.ID)

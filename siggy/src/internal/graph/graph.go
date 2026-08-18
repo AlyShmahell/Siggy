@@ -13,13 +13,13 @@ import (
 type Node string
 
 const (
-	NodeThink     Node = "Think"
-	NodeSchedule  Node = "ScheduleTools"
-	NodeApprove   Node = "AwaitApproval"
-	NodeExecute   Node = "Execute"
-	NodeSpawn     Node = "Spawn"
-	NodeCompact   Node = "Compact"
-	NodeDone      Node = "Done"
+	NodeThink    Node = "Think"
+	NodeSchedule Node = "ScheduleTools"
+	NodeApprove  Node = "AwaitApproval"
+	NodeExecute  Node = "Execute"
+	NodeSpawn    Node = "Spawn"
+	NodeCompact  Node = "Compact"
+	NodeDone     Node = "Done"
 )
 
 type Graph struct {
@@ -39,7 +39,7 @@ func New(client llm.Client, reg *tools.Registry, h *harness.Harness, extra strin
 
 func FromSession(client llm.Client, reg *tools.Registry, h *harness.Harness) *Graph {
 	g := &Graph{
-		Engine: &loop.Engine{LLM: client, Tools: reg, Harness: h},
+		Engine: &loop.Engine{LLM: client, Tools: reg, Harness: h, ContextWindow: 128000},
 		Node:   NodeThink,
 		Mode:   h.Mode,
 	}
@@ -50,6 +50,14 @@ func FromSession(client llm.Client, reg *tools.Registry, h *harness.Harness) *Gr
 func (g *Graph) SetMode(m harness.Mode) {
 	g.Mode = m
 	g.Engine.Harness.Mode = m
+}
+
+func (g *Graph) Reseed() {
+	if g == nil || g.Engine == nil || g.Engine.Harness == nil {
+		return
+	}
+	sys := prompt.System(g.Engine.Harness, g.Engine.Tools, "")
+	g.Engine.Messages = []llm.Message{{Role: llm.RoleSystem, Content: sys}}
 }
 
 func (g *Graph) Resume(records []harness.Record) {

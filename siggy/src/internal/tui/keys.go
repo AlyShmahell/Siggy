@@ -1,12 +1,24 @@
 package tui
 
 import (
+	"unicode/utf8"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"siggy/src/internal/harness"
 )
 
 func (m model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if cmd, ok := m.handleEditKey(msg); ok {
+		if m.page == pageSession {
+			m.syncMentions()
+		}
+		if m.page == pageProviderForm {
+			m.layout()
+		}
+		m.syncView()
+		return m, cmd
+	}
 	if msg.String() == "ctrl+c" {
 		if m.cancel != nil {
 			m.cancel()
@@ -37,23 +49,148 @@ func (m model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.focusTrans {
+		return m.transKey(msg)
+	}
+
 	if isNewlineKey(msg) {
-		m.insertNewline()
+		m.insertText("\n")
+		m.syncMentions()
 		return m, nil
 	}
 	switch msg.String() {
 	case "enter":
 		if msg.Alt {
-			m.insertNewline()
+			m.insertText("\n")
+			m.syncMentions()
 			return m, nil
 		}
 		return m.submit()
+	case "left":
+		m.moveCaret(-1, false)
+		return m, nil
+	case "right":
+		m.moveCaret(1, false)
+		return m, nil
+	case "up":
+		m.moveCaretLine(-1, false)
+		return m, nil
+	case "down":
+		m.moveCaretLine(1, false)
+		return m, nil
+	case "shift+left":
+		m.moveCaret(-1, true)
+		return m, nil
+	case "shift+right":
+		m.moveCaret(1, true)
+		return m, nil
+	case "shift+up":
+		m.moveCaretLine(-1, true)
+		return m, nil
+	case "shift+down":
+		m.moveCaretLine(1, true)
+		return m, nil
+	case "backspace":
+		m.editBackspace()
+		m.syncMentions()
+		return m, nil
+	}
+	if isSpaceKey(msg) {
+		m.insertText(" ")
+		m.syncMentions()
+		return m, nil
+	}
+	if len(msg.Runes) == 1 && msg.Type == tea.KeyRunes {
+		m.insertText(string(msg.Runes))
+		m.syncMentions()
+		return m, nil
 	}
 
 	var cmd tea.Cmd
 	m.ta, cmd = m.ta.Update(msg)
 	m.syncMentions()
 	return m, cmd
+}
+
+func (m model) transKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.blurTranscript()
+		m.syncView()
+		return m, nil
+	case "left", "shift+left":
+		m.moveTransCaret(-1, 0)
+		return m, nil
+	case "right", "shift+right":
+		m.moveTransCaret(1, 0)
+		return m, nil
+	case "up", "shift+up":
+		m.moveTransCaret(0, -1)
+		return m, nil
+	case "down", "shift+down":
+		m.moveTransCaret(0, 1)
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) canEditText() bool {
+	return m.page == pageSession || m.page == pageProviderForm
+}
+
+func (m *model) handleEditKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	if m.approval != nil || !m.canEditText() {
+		return nil, false
+	}
+	if m.focusTrans {
+		switch msg.String() {
+		case "ctrl+c":
+			if m.hasTransSel() {
+				return m.transCopy(), true
+			}
+			return nil, true
+		case "ctrl+a":
+			m.transSelectAll()
+			return nil, true
+		case "ctrl+x", "ctrl+v":
+			return nil, true
+		}
+		if isPasteKey(msg) {
+			return nil, true
+		}
+		return nil, false
+	}
+	if isPasteKey(msg) {
+		m.insertText(string(msg.Runes))
+		return nil, true
+	}
+	switch msg.String() {
+	case "ctrl+c":
+		if m.hasSel() {
+			return m.editCopy(), true
+		}
+		return nil, false
+	case "ctrl+x":
+		return m.editCut(), true
+	case "ctrl+v":
+		m.editPaste("")
+		return nil, true
+	case "ctrl+a":
+		m.selectAll()
+		return nil, true
+	}
+	return nil, false
+}
+
+func isSpaceKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeySpace {
+		return true
+	}
+	switch msg.String() {
+	case " ", "space":
+		return true
+	}
+	return msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' '
 }
 
 func isNewlineKey(msg tea.KeyMsg) bool {
@@ -64,9 +201,11 @@ func isNewlineKey(msg tea.KeyMsg) bool {
 	return msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '\n'
 }
 
-func (m *model) insertNewline() {
-	m.ta, _ = m.ta.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m.syncMentions()
+func isPasteKey(msg tea.KeyMsg) bool {
+	if msg.Paste && len(msg.Runes) > 0 {
+		return true
+	}
+	return msg.Type == tea.KeyRunes && len(msg.Runes) > 1
 }
 
 func (m model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -145,63 +284,68 @@ func (m model) settingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
-		if m.form.field == 3 && len(m.form.models) > 0 {
-			m.form.modelIdx = clamp(m.form.modelIdx-1, 0, len(m.form.models)-1)
-			m.formOff = ensureVisible(m.form.modelIdx, m.reg.formVis, m.formOff)
-		}
+		m.formMoveField(-1)
 	case "down":
-		if m.form.field == 3 && len(m.form.models) > 0 {
-			m.form.modelIdx = clamp(m.form.modelIdx+1, 0, len(m.form.models)-1)
-			m.formOff = ensureVisible(m.form.modelIdx, m.reg.formVis, m.formOff)
-		}
+		m.formMoveField(1)
+	case "left":
+		m.moveCaret(-1, false)
+	case "right":
+		m.moveCaret(1, false)
+	case "shift+left":
+		m.moveCaret(-1, true)
+	case "shift+right":
+		m.moveCaret(1, true)
 	case "backspace":
-		m.formBackspace()
+		m.editBackspace()
 	default:
-		if len(msg.Runes) == 1 && msg.Type == tea.KeyRunes {
-			m.formType(string(msg.Runes))
+		if isSpaceKey(msg) {
+			m.insertText(" ")
+		} else if isPasteKey(msg) || (len(msg.Runes) == 1 && msg.Type == tea.KeyRunes) {
+			m.insertText(string(msg.Runes))
 		}
 	}
 	m.layout()
 	return m, nil
 }
 
-func (m *model) formType(s string) {
+func (m *model) formMoveField(delta int) {
 	switch {
-	case m.form.field == 0:
-		m.form.name += s
-	case m.form.field == 1:
-		m.form.url += s
-	case m.form.field == 2:
-		m.form.apiKey += s
-	case m.form.field == 3 && m.form.modelIdx >= 0 && m.form.modelIdx < len(m.form.models):
-		m.form.models[m.form.modelIdx] += s
-	}
-}
-
-func (m *model) formBackspace() {
-	cut := func(s string) string {
-		r := []rune(s)
-		if len(r) == 0 {
-			return ""
+	case m.form.field < 3:
+		next := m.form.field + delta
+		if next < 0 {
+			return
 		}
-		return string(r[:len(r)-1])
+		if next > 2 {
+			m.form.field = 3
+			if n := len(m.form.models); n > 0 {
+				m.form.modelIdx = clamp(m.form.modelIdx, 0, n-1)
+				m.formOff = ensureVisible(m.form.modelIdx, m.reg.formVis, m.formOff)
+			}
+		} else {
+			m.form.field = next
+		}
+	case delta < 0:
+		if m.form.modelIdx > 0 && len(m.form.models) > 0 {
+			m.form.modelIdx--
+			m.formOff = ensureVisible(m.form.modelIdx, m.reg.formVis, m.formOff)
+		} else {
+			m.form.field = 2
+		}
+	default:
+		if n := len(m.form.models); n > 0 {
+			m.form.modelIdx = clamp(m.form.modelIdx+1, 0, n-1)
+			m.formOff = ensureVisible(m.form.modelIdx, m.reg.formVis, m.formOff)
+		}
 	}
-	switch {
-	case m.form.field == 0:
-		m.form.name = cut(m.form.name)
-	case m.form.field == 1:
-		m.form.url = cut(m.form.url)
-	case m.form.field == 2:
-		m.form.apiKey = cut(m.form.apiKey)
-	case m.form.field == 3 && m.form.modelIdx >= 0 && m.form.modelIdx < len(m.form.models):
-		m.form.models[m.form.modelIdx] = cut(m.form.models[m.form.modelIdx])
-	}
+	m.selCaret = utf8.RuneCountInString(m.formValue())
+	m.collapseSel()
 }
 
-func (m model) decide(i int) {
+func (m *model) decide(i int) {
 	if m.approval == nil {
 		return
 	}
+	labels := []string{"allow once", "allow session", "deny"}
 	d := harness.Deny
 	switch i {
 	case 0:
@@ -209,10 +353,16 @@ func (m model) decide(i int) {
 	case 1:
 		d = harness.AllowSession
 	}
+	choice := clamp(i, 0, 2)
+	q := "approve " + m.approval.Tool + " (" + m.approval.Risk + "): " + m.approval.Summary
+	a := "→ " + labels[choice]
 	select {
 	case m.approval.Reply <- d:
 	default:
 	}
 	m.approval = nil
+	m.closeFloat()
 	m.status = "running"
+	m.followBottom = true
+	m.lines = append(m.lines, line{kind: "sys", text: q}, line{kind: "sys", text: a})
 }

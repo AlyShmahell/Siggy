@@ -24,11 +24,17 @@ func (m *Manager) Delegate(ctx context.Context, agent, task string) (string, err
 	if m.Parent.Depth >= maxDepth {
 		return "", fmt.Errorf("subagent depth cap %d reached", maxDepth)
 	}
-	spec, err := Resolve(m.Parent.Workspace.Root, agent)
+	spec, err := Resolve(m.Parent.Workspace.Root, m.Parent.Home, agent)
 	if err != nil {
 		return "", err
 	}
-	childSess, err := harness.NewSession(m.Parent.Home)
+	childSess, err := harness.NewSessionMeta(m.Parent.Home, harness.SessionMeta{
+		CWD:           m.Parent.Workspace.Root,
+		WorkspaceHash: harness.HashWorkspace(m.Parent.Workspace.Root),
+		Depth:         m.Parent.Depth + 1,
+		Origin:        "subagent",
+		ParentID:      m.Parent.Session.ID,
+	})
 	if err != nil {
 		return "", err
 	}

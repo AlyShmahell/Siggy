@@ -104,6 +104,23 @@ func (s *Scheduler) execOne(ctx context.Context, call llm.ToolCall, emit func(Ev
 	}
 
 	emit(Event{Kind: KindToolStart, Tool: call.Name, CallID: call.ID, Args: args})
+	if v, ok := tool.(tools.Visual); ok {
+		out, images, err := v.RunVisual(ctx, call.Args)
+		if err != nil {
+			text := err.Error()
+			if out != "" {
+				text = out + "\n" + text
+			}
+			emit(Event{Kind: KindToolEnd, Tool: call.Name, CallID: call.ID, Text: text, Err: err})
+			_ = s.harness.Session.Append(harness.Record{Type: "tool", Tool: call.Name, CallID: call.ID, Args: args, Result: text})
+			return toolMessage(call, text)
+		}
+		emit(Event{Kind: KindToolEnd, Tool: call.Name, CallID: call.ID, Text: out})
+		_ = s.harness.Session.Append(harness.Record{Type: "tool", Tool: call.Name, CallID: call.ID, Args: args, Result: out})
+		msg := toolMessage(call, out)
+		msg.Parts = images
+		return msg
+	}
 	out, err := tool.Run(ctx, call.Args)
 	if err != nil {
 		text := err.Error()

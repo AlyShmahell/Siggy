@@ -1,0 +1,15 @@
+services:
+  tests:
+    image: localhost/siggy-tests:latest
+    build:
+      context: ..
+      dockerfile: tests/containerfile
+    working_dir: /src
+    volumes:
+      - ../siggy/src:/src/src:Z
+      - ../tests/smoke:/smoke:Z
+    environment:
+      HOME: /tmp
+      SIGGY_HOME: /tmp/siggy-home
+      CGO_ENABLED: "0"
+    command: ["-c", "go test ./src/..."]

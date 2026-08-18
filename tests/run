@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../toolchains/menu.sh
+source "$ROOT/toolchains/menu.sh"
+
+compose() {
+  (cd "$ROOT/tests" && podman compose -f compose.yaml "$@")
+}
+
+ensure_toolchain() {
+  (cd "$ROOT/toolchains" && podman compose -f compose.yaml build toolchain)
+}
+
+cmd_build() {
+  ensure_toolchain
+  compose build tests
+}
+
+cmd_unit() {
+  cmd_build
+  compose run --rm tests -c "go test ./src/..."
+}
+
+cmd_smoke() {
+  cmd_build
+  compose run --rm tests /smoke/run
+}
+
+cmd_shell() {
+  cmd_build
+  compose run --rm tests
+}
+
+cmd_down() {
+  compose down --remove-orphans || true
+}
+
+menu_parse_cli "$@"
+menu_run "siggy tests  ·  podman" \
+  "Build:cmd_build" \
+  "Unit:cmd_unit" \
+  "Smoke:cmd_smoke" \
+  "Shell:cmd_shell" \
+  "Down:cmd_down"

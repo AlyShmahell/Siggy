@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="/usr/local/go/bin:/go/bin:${PATH}"
+ROOT="${SMOKE_ROOT:-/src}"
+export SIGGY_HOME="${SIGGY_HOME:-/tmp/siggy-home}"
+export HOME="${HOME:-/tmp}"
+mkdir -p "$SIGGY_HOME" /tmp/smoke-ws
+cd "$ROOT"
+
+echo "== unit =="
+go test ./src/...
+
+echo "== build =="
+go build -o /tmp/siggy ./src/cmd/siggy
+
+echo "== mock openai =="
+go build -o /tmp/mockopenai /smoke/mockopenai/main.go
+/tmp/mockopenai &
+MOCK_PID=$!
+trap 'kill "$MOCK_PID" 2>/dev/null || true' EXIT
+for i in $(seq 1 40); do
+  if curl -sf http://127.0.0.1:8080/health >/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+
+export OPENAI_BASE_URL="http://127.0.0.1:8080"
+export OPENAI_API_KEY="smoke"
+export OPENAI_MODEL="mock"
+export SIGGY_WORKSPACE="/tmp/smoke-ws"
+
+echo "== headless read-only turn =="
+/tmp/siggy -p "look around" | tee /tmp/smoke-read.out
+grep -q "ok:" /tmp/smoke-read.out
+
+echo "== write denied without --yes =="
+/tmp/siggy -p "please write a note" 2>/tmp/smoke-deny.err | tee /tmp/smoke-deny.out || true
+if [[ -f /tmp/smoke-ws/smoke.txt ]]; then
+  echo "write should have been denied" >&2
+  exit 1
+fi
+grep -q "denied" /tmp/smoke-deny.err
+
+echo "== plan mode blocks write =="
+/tmp/siggy --plan -p "please write a note" 2>/tmp/smoke-plan.err | tee /tmp/smoke-plan.out || true
+if [[ -f /tmp/smoke-ws/smoke.txt ]]; then
+  echo "plan mode leaked a write" >&2
+  exit 1
+fi
+
+echo "== write allowed with --yes =="
+/tmp/siggy --yes -p "please write a note" >/tmp/smoke-write.out
+test -f /tmp/smoke-ws/smoke.txt
+
+echo "== delegate =="
+/tmp/siggy --yes -p "delegate an explore pass" | tee /tmp/smoke-del.out
+grep -qi "ok:" /tmp/smoke-del.out
+
+echo "== smoke ok =="

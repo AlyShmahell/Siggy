@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../toolchains/menu.sh
+source "$ROOT/toolchains/menu.sh"
+
+export SIGGY_WORKSPACE="${SIGGY_WORKSPACE:-$ROOT/workspace}"
+export SIGGY_HOME="${SIGGY_HOME:-$HOME/.siggy}"
+mkdir -p "$SIGGY_HOME"
+
+compose() {
+  (cd "$ROOT/siggy" && podman compose -f compose.yaml "$@")
+}
+
+ensure_toolchain() {
+  (cd "$ROOT/toolchains" && podman compose -f compose.yaml build toolchain)
+}
+
+cmd_build() {
+  ensure_toolchain
+  compose build siggy
+}
+
+cmd_tui() {
+  cmd_build
+  compose run --rm --service-ports siggy
+}
+
+cmd_headless() {
+  local prompt="${MENU_ARGS[*]:-}"
+  if [[ -z "$prompt" ]]; then
+    if [[ -t 0 ]]; then
+      printf 'prompt> '
+      IFS= read -r prompt
+    else
+      printf 'usage: ./run -- "Run headless" -- "<prompt>"\n' >&2
+      return 2
+    fi
+  fi
+  cmd_build
+  compose run --rm siggy -p "$prompt"
+}
+
+cmd_shell() {
+  cmd_build
+  compose run --rm --entrypoint /bin/bash siggy
+}
+
+cmd_down() {
+  compose down --remove-orphans || true
+  (cd "$ROOT/toolchains" && podman compose -f compose.yaml down --remove-orphans) || true
+}
+
+menu_parse_cli "$@"
+menu_run "siggy  ·  podman" \
+  "Build:cmd_build" \
+  "Run TUI:cmd_tui" \
+  "Run headless:cmd_headless" \
+  "Shell:cmd_shell" \
+  "Down:cmd_down"

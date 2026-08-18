@@ -1,0 +1,616 @@
+package tui
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"siggy/src/internal/config"
+	"siggy/src/internal/graph"
+	"siggy/src/internal/harness"
+	"siggy/src/internal/llm"
+	"siggy/src/internal/loop"
+)
+
+type page int
+
+const (
+	pageSession page = iota
+	pageSettings
+	pageProviderForm
+)
+
+type settingsTab int
+
+const (
+	settingsTabProviders settingsTab = iota
+	settingsTabVersion
+)
+
+type line struct {
+	kind string
+	text string
+	tool string
+}
+
+type providerForm struct {
+	original  string
+	name      string
+	url       string
+	apiKey    string
+	models    []string
+	protocols []string
+	field     int
+	modelIdx  int
+	protoIdx  int
+	err       string
+}
+
+type model struct {
+	width, height int
+	cfg           *config.Config
+	g             *graph.Graph
+	h             *harness.Harness
+	home          string
+
+	hits *HitMap
+	scr  *frame
+	reg  *regions
+	page page
+
+	vp viewport.Model
+	ta textarea.Model
+
+	lines    []line
+	sessions []string
+	sessIdx  int
+
+	hovered Target
+	pressed *Target
+
+	running   bool
+	cancel    context.CancelFunc
+	evCh      chan loop.Event
+	approval  *harness.ApprovalRequest
+	choice    int
+	float     floatKind
+	palIdx    int
+	status    string
+	err       string
+	streaming string
+
+	provIdx      int
+	form         providerForm
+	tab          settingsTab
+	tokensUsed   int
+	mentions     []string
+	modelHealth  string
+	listOff      int
+	provOff      int
+	formOff      int
+	followBottom bool
+}
+
+type evMsg loop.Event
+type doneWait struct{}
+type healthMsg struct{ status string }
+
+type floatKind int
+
+const (
+	floatNone floatKind = iota
+	floatMode
+	floatModel
+	floatSessions
+	floatMentions
+)
+
+var modeItems = []string{string(harness.ModeChat), string(harness.ModePlan), string(harness.ModeAct)}
+
+type modelPair struct {
+	provider string
+	model    string
+	label    string
+}
+
+var protocolOptions = []struct {
+	id      string
+	label   string
+	enabled bool
+}{
+	{config.ProtocolOpenAI, "openai", true},
+	{"anthropic", "anthropic (soon)", false},
+	{"gemini", "gemini (soon)", false},
+}
+
+func New(g *graph.Graph, h *harness.Harness, cfg *config.Config) model {
+	ta := textarea.New()
+	ta.Placeholder = "message siggy"
+	ta.Focus()
+	ta.Prompt = ""
+	ta.CharLimit = 0
+	ta.SetHeight(3)
+	ta.ShowLineNumbers = false
+	ta.FocusedStyle.CursorLine = ta.BlurredStyle.CursorLine
+	vp := viewport.New(80, 20)
+	home := h.Home
+	if cfg != nil {
+		home = cfg.Home
+	}
+	m := model{
+		vp:          vp,
+		ta:          ta,
+		g:           g,
+		h:           h,
+		cfg:         cfg,
+		home:        home,
+		hits:        &HitMap{},
+		scr:         &frame{},
+		reg:         &regions{},
+		status:      "ready",
+		modelHealth: "…",
+		lines: []line{
+			{kind: "sys", text: "session ready"},
+		},
+	}
+	m.scr.hits = m.hits
+	if cfg == nil {
+		m.cfg = &config.Config{Home: home, ActiveProvider: "env", Model: "gpt-4.1", Providers: []config.Provider{{
+			Name: "env", URL: "https://api.openai.com/v1", Models: []string{"gpt-4.1"}, Protocols: []string{config.ProtocolOpenAI},
+		}}}
+	}
+	m.reloadSessions()
+	m.width, m.height = 80, 24
+	m.layout()
+	m.refresh()
+	_ = m.paint()
+	return m
+}
+
+func (m model) Init() tea.Cmd {
+	return tea.Batch(textarea.Blink, enableEnhancedKeys(), m.probeHealth())
+}
+
+func Run(g *graph.Graph, h *harness.Harness, cfg *config.Config) error {
+	in, restore := programInput()
+	defer restore()
+	defer disableEnhancedKeys()
+	p := tea.NewProgram(New(g, h, cfg), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithInput(in))
+	_, err := p.Run()
+	return err
+}
+
+func waitEvent(ch <-chan loop.Event) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return doneWait{}
+		}
+		return evMsg(ev)
+	}
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.syncView()
+		return m, nil
+	case evMsg:
+		return m.onEvent(loop.Event(msg))
+	case doneWait:
+		m.running = false
+		m.status = "ready"
+		m.layout()
+		return m, nil
+	case tea.MouseMsg:
+		return m.onMouse(msg)
+	case tea.KeyMsg:
+		return m.onKey(msg)
+	case healthMsg:
+		if msg.status != "" {
+			m.modelHealth = msg.status
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	if m.page == pageSession && !m.modal() {
+		m.ta, cmd = m.ta.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m model) modal() bool {
+	return m.approval != nil || m.float != floatNone
+}
+
+func (m *model) openFloat(k floatKind) {
+	m.float = k
+	m.palIdx = 0
+	m.listOff = 0
+	if k == floatSessions && len(m.sessions) > 0 {
+		m.palIdx = clamp(m.sessIdx, 0, len(m.sessions)-1) + 1
+	}
+}
+
+func (m *model) closeFloat() {
+	m.float = floatNone
+}
+
+func (m *model) floatItems() []string {
+	switch m.float {
+	case floatMode:
+		return append([]string{}, modeItems...)
+	case floatModel:
+		var out []string
+		for _, p := range m.modelPairs() {
+			out = append(out, p.label)
+		}
+		return out
+	case floatSessions:
+		out := []string{"delete all"}
+		return append(out, m.sessions...)
+	case floatMentions:
+		return append([]string{}, m.mentions...)
+	default:
+		return nil
+	}
+}
+
+func (m model) onSettings() bool {
+	return m.page == pageSettings || m.page == pageProviderForm
+}
+
+func (m *model) modelPairs() []modelPair {
+	var out []modelPair
+	if m.cfg == nil {
+		return out
+	}
+	for _, p := range m.cfg.Providers {
+		if len(p.Models) == 0 {
+			out = append(out, modelPair{provider: p.Name, label: p.Name})
+			continue
+		}
+		for _, mod := range p.Models {
+			out = append(out, modelPair{provider: p.Name, model: mod, label: p.Name + " / " + mod})
+		}
+	}
+	return out
+}
+
+func (m *model) currentMode() string {
+	mode := string(harness.ModeAct)
+	if m.g != nil && m.g.Engine != nil && m.g.Engine.Harness != nil && m.g.Engine.Harness.Mode != "" {
+		mode = string(m.g.Engine.Harness.Mode)
+	}
+	return mode
+}
+
+func (m *model) phaseLabel() string {
+	if !m.running && m.approval == nil {
+		return "ready"
+	}
+	node := ""
+	if m.g != nil && m.g.Node != "" {
+		node = string(m.g.Node)
+	}
+	return phaseFromNode(node)
+}
+
+func phaseFromNode(node string) string {
+	switch graph.Node(node) {
+	case graph.NodeThink, graph.NodeCompact:
+		return "thinking"
+	case graph.NodeSchedule, graph.NodeExecute, graph.NodeSpawn:
+		return "tools"
+	case graph.NodeApprove:
+		return "approval"
+	case graph.NodeDone:
+		return "done"
+	}
+	if node == "" {
+		return "thinking"
+	}
+	return strings.ToLower(node)
+}
+
+func (m *model) currentModelLabel() string {
+	if m.cfg == nil {
+		return "env / gpt-4.1"
+	}
+	return m.cfg.ActiveProvider + " / " + m.cfg.Model
+}
+
+func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
+	switch ev.Kind {
+	case loop.KindText:
+		m.streaming += ev.Text
+		m.replaceStream()
+	case loop.KindToolStart:
+		m.flushStream()
+		m.lines = append(m.lines, line{kind: "tool", tool: ev.Tool, text: ev.Args})
+	case loop.KindToolEnd:
+		text := ev.Text
+		if len(text) > 240 {
+			text = text[:240] + "…"
+		}
+		kind := "ok"
+		if ev.Err != nil {
+			kind = "err"
+		}
+		m.lines = append(m.lines, line{kind: kind, tool: ev.Tool, text: text})
+	case loop.KindApproval:
+		m.approval = ev.Approval
+		m.choice = 0
+		m.status = "approval"
+	case loop.KindError:
+		m.flushStream()
+		if ev.Err != nil {
+			m.err = ev.Err.Error()
+			m.lines = append(m.lines, line{kind: "err", text: ev.Err.Error()})
+			if ev.Tool == "" {
+				m.modelHealth = "err"
+			}
+		}
+	case loop.KindDone:
+		m.flushStream()
+		m.running = false
+		m.status = "ready"
+		m.modelHealth = "ok"
+		m.syncView()
+		return m, nil
+	case loop.KindNode:
+		m.status = phaseFromNode(ev.Node)
+	case loop.KindMode:
+		m.status = ev.Mode
+	case loop.KindSystem:
+		m.lines = append(m.lines, line{kind: "sys", text: ev.Text})
+	case loop.KindUsage:
+		if ev.TotalTokens > 0 {
+			m.tokensUsed = ev.TotalTokens
+		} else if ev.PromptTokens > 0 {
+			m.tokensUsed = ev.PromptTokens
+		}
+	}
+	m.syncView()
+	if m.running {
+		return m, waitEvent(m.evCh)
+	}
+	return m, nil
+}
+
+func (m *model) syncView() {
+	m.layout()
+	if m.page == pageSession {
+		m.refresh()
+	}
+}
+
+func (m *model) resetTranscript(text string) {
+	m.err = ""
+	m.streaming = ""
+	m.followBottom = true
+	m.lines = []line{
+		{kind: "sys", text: "session ready"},
+		{kind: "sys", text: text},
+	}
+}
+
+func (m *model) leaveSessionPage() {
+	m.err = ""
+	m.closeFloat()
+}
+
+func (m *model) flushStream() {
+	if m.streaming == "" {
+		return
+	}
+	m.replaceStream()
+	m.streaming = ""
+}
+
+func (m *model) replaceStream() {
+	if len(m.lines) > 0 && m.lines[len(m.lines)-1].kind == "asst-live" {
+		m.lines[len(m.lines)-1].text = m.streaming
+		return
+	}
+	m.lines = append(m.lines, line{kind: "asst-live", text: m.streaming})
+}
+
+func (m *model) reloadSessions() {
+	ids, err := harness.ListSessions(m.home)
+	if err != nil {
+		m.sessions = nil
+		return
+	}
+	m.sessions = ids
+	for i, id := range ids {
+		if m.h != nil && m.h.Session != nil && id == m.h.Session.ID {
+			m.sessIdx = i
+		}
+	}
+}
+
+func (m *model) applyClient() {
+	if m.cfg == nil || m.g == nil || m.g.Engine == nil {
+		return
+	}
+	p := m.cfg.Active()
+	m.g.Engine.LLM = llm.NewHTTP(p.URL, p.APIKey, m.cfg.Model)
+}
+
+func (m *model) afterClientChange() tea.Cmd {
+	m.modelHealth = "…"
+	return m.probeHealth()
+}
+
+type pinger interface {
+	Ping(context.Context) string
+}
+
+func (m model) probeHealth() tea.Cmd {
+	var client llm.Client
+	if m.g != nil && m.g.Engine != nil {
+		client = m.g.Engine.LLM
+	}
+	return func() tea.Msg {
+		if client == nil {
+			return healthMsg{status: "…"}
+		}
+		p, ok := client.(pinger)
+		if !ok {
+			return healthMsg{status: "…"}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		return healthMsg{status: p.Ping(ctx)}
+	}
+}
+
+func workspaceName(h *harness.Harness) string {
+	if h == nil || h.Workspace == nil {
+		return "."
+	}
+	return filepath.Base(h.Workspace.Root)
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func visibleStart(n, vis, off int) int {
+	if vis < 1 {
+		return 0
+	}
+	return clamp(off, 0, max(n-vis, 0))
+}
+
+func scrollOff(off, n, vis, dir int) int {
+	return visibleStart(n, vis, off+dir)
+}
+
+func ensureVisible(sel, vis, off int) int {
+	if vis < 1 {
+		return off
+	}
+	if sel < off {
+		return sel
+	}
+	if sel >= off+vis {
+		return sel - vis + 1
+	}
+	return off
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+func containsStr(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) start(user string) (tea.Model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.running = true
+	m.status = "thinking"
+	m.evCh = make(chan loop.Event, 32)
+	go func() {
+		_ = m.g.Run(ctx, user, func(ev loop.Event) {
+			select {
+			case m.evCh <- ev:
+			case <-ctx.Done():
+			}
+		})
+		close(m.evCh)
+	}()
+	m.syncView()
+	return m, waitEvent(m.evCh)
+}
+
+func (m model) submit() (tea.Model, tea.Cmd) {
+	text := strings.TrimSpace(m.ta.Value())
+	if text == "" || m.running {
+		return m, nil
+	}
+	m.ta.Reset()
+	m.closeFloat()
+	if strings.HasPrefix(text, "/") {
+		return m.command(text)
+	}
+	m.lines = append(m.lines, line{kind: "user", text: text})
+	m.refresh()
+	return m.start(expandMentions(m.h, text))
+}
+
+func (m model) command(text string) (tea.Model, tea.Cmd) {
+	cmd, _, _ := strings.Cut(text, " ")
+	switch cmd {
+	case "/help":
+		m.lines = append(m.lines, line{kind: "sys", text: " /help /new /resume /plan /act /allow /providers /connect /quit"})
+	case "/new":
+		return m.activate(Target{Kind: KindSidebarNew})
+	case "/resume":
+		m.reloadSessions()
+		m.openFloat(floatSessions)
+	case "/plan":
+		m.g.SetMode(harness.ModePlan)
+		m.lines = append(m.lines, line{kind: "sys", text: "mode → plan"})
+	case "/act":
+		m.g.SetMode(harness.ModeAct)
+		m.lines = append(m.lines, line{kind: "sys", text: "mode → act"})
+	case "/allow":
+		m.h.Approvals.SetAuto(true)
+		m.lines = append(m.lines, line{kind: "sys", text: "auto-approve on"})
+	case "/providers", "/connect":
+		m.leaveSessionPage()
+		m.page = pageSettings
+		m.tab = settingsTabProviders
+		m.provIdx = 0
+		m.provOff = 0
+	case "/quit":
+		return m, tea.Quit
+	default:
+		m.lines = append(m.lines, line{kind: "err", text: "unknown command " + cmd})
+	}
+	m.syncView()
+	return m, nil
+}

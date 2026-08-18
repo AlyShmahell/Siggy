@@ -1,0 +1,20 @@
+services:
+  siggy:
+    image: localhost/siggy:latest
+    build:
+      context: ..
+      dockerfile: siggy/containerfile
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    userns_mode: keep-id
+    volumes:
+      - ${SIGGY_WORKSPACE:-..}:/workspace:Z
+      - ${SIGGY_HOME:-${HOME}/.siggy}:/home/siggy/.siggy:Z
+    environment:
+      HOME: /home/siggy
+      SIGGY_HOME: /home/siggy/.siggy
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+    command: []

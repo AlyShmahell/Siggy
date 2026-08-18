@@ -1,0 +1,7 @@
+services:
+  toolchain:
+    image: localhost/siggy-toolchain:latest
+    build:
+      context: ..
+      dockerfile: toolchains/containerfile
+    command: ["true"]

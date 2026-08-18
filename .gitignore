@@ -27,6 +27,12 @@ go.work.sum
 # env file
 .env
 
+# local home / sessions
+.siggy/
+
 # Editor/IDE
 # .idea/
 # .vscode/
+
+workspace/**
+!workspace/.gitkeep

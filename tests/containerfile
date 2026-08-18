@@ -1,0 +1,12 @@
+FROM localhost/siggy-toolchain:latest
+
+WORKDIR /src
+COPY siggy/go.mod siggy/go.sum ./
+COPY siggy/src ./src
+COPY tests/smoke /smoke
+
+ENV CGO_ENABLED=0
+RUN go mod download
+
+WORKDIR /src
+ENTRYPOINT ["/bin/bash"]

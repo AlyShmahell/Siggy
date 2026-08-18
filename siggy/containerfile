@@ -1,0 +1,19 @@
+FROM localhost/siggy-toolchain:latest AS build
+
+WORKDIR /src
+COPY VERSION ./VERSION
+COPY siggy/go.mod siggy/go.sum ./
+COPY siggy/src ./src
+RUN go mod download \
+    && go build -trimpath \
+       -ldflags="-s -w -X siggy/src/internal/version.Value=$(tr -d '[:space:]' < VERSION)" \
+       -o /out/siggy ./src/cmd/siggy
+
+FROM docker.io/library/alpine:3.21
+RUN apk add --no-cache ca-certificates git ripgrep bash \
+    && adduser -D -u 1000 -s /bin/bash siggy
+
+COPY --from=build /out/siggy /usr/local/bin/siggy
+USER siggy
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/siggy"]

@@ -3,10 +3,15 @@
 </p>
 
 <p align="center">
-  Siggy is an agentic harness as cool as a cat, as light as a kitty.
+  Siggy is an agentic harness as cool as a cat, as lite as a kitty.
 </p>
 
 > **Caution:** this is alpha and a work in progress. APIs, install layout, and behavior can change or break without notice.
+
+## Contents
+
+- [Install](#install)
+- [Usage](docs/usage.md)
 
 ## Install
 

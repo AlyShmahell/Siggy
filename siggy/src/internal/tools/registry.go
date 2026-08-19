@@ -14,6 +14,21 @@ type Registry struct {
 	tools map[string]Tool
 }
 
+var toolAliases = map[string]string{
+	"read_file":  "file_read",
+	"write_file": "file_write",
+	"edit_file":  "file_edit",
+	"read_pdf":   "pdf_read",
+	"list_dir":   "dir_list",
+}
+
+func CanonicalName(name string) string {
+	if c, ok := toolAliases[name]; ok {
+		return c
+	}
+	return name
+}
+
 func NewRegistry() *Registry {
 	return &Registry{tools: map[string]Tool{}}
 }
@@ -27,7 +42,7 @@ func (r *Registry) Register(t Tool) {
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	t, ok := r.tools[name]
+	t, ok := r.tools[CanonicalName(name)]
 	return t, ok
 }
 
@@ -59,7 +74,7 @@ func (r *Registry) Filter(allow []string) *Registry {
 	}
 	set := map[string]bool{}
 	for _, n := range allow {
-		set[n] = true
+		set[CanonicalName(n)] = true
 	}
 	next := NewRegistry()
 	r.mu.RLock()
@@ -95,8 +110,8 @@ func Builtins(h *harness.Harness, d Delegator) *Registry {
 	r.Register(NewGrep(h))
 	r.Register(NewShell(h))
 	r.Register(NewTodo(h))
-	r.Register(NewFetch())
-	r.Register(NewSearch())
+	r.Register(NewFetch(h))
+	r.Register(NewSearch(h))
 	r.Register(NewRemember(h))
 	r.Register(NewForget(h))
 	r.Register(NewSearchMemory(h))

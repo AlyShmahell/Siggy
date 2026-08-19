@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"siggy/src/internal/harness"
+	"siggy/src/internal/tools/utils"
 )
 
 func testHarness(t *testing.T) *harness.Harness {
@@ -35,7 +36,7 @@ func TestReadWriteEdit(t *testing.T) {
 	}
 	r := NewRead(h)
 	got, err := r.Run(ctx, json.RawMessage(`{"path":"a.txt"}`))
-	if err != nil || got != "hello world" {
+	if err != nil || !strings.Contains(got, "hello world") || !strings.Contains(got, "1|") {
 		t.Fatalf("read = %q %v", got, err)
 	}
 	e := NewEdit(h)
@@ -43,8 +44,36 @@ func TestReadWriteEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err = r.Run(ctx, json.RawMessage(`{"path":"a.txt"}`))
-	if err != nil || got != "hello siggy" {
+	if err != nil || !strings.Contains(got, "hello siggy") || !strings.Contains(got, "1|") {
 		t.Fatalf("edited = %q %v", got, err)
+	}
+}
+
+func TestReadDefaultLineCap(t *testing.T) {
+	h := testHarness(t)
+	lines := make([]string, 2001)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("L%d", i+1)
+	}
+	if err := os.WriteFile(filepath.Join(h.Workspace.Root, "big.txt"), []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewRead(h).Run(context.Background(), json.RawMessage(`{"path":"big.txt"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "  2000|L2000") {
+		t.Fatalf("missing numbered cap line: %q", got[len(got)-80:])
+	}
+	if strings.Contains(got, "2001|L2001") {
+		t.Fatalf("uncapped read included line 2001: %q", got[len(got)-80:])
+	}
+	if !strings.Contains(got, "2001 lines") || !strings.Contains(got, "use offset/limit") {
+		t.Fatalf("missing remainder note: %q", got[len(got)-120:])
+	}
+	sliced, err := NewRead(h).Run(context.Background(), json.RawMessage(`{"path":"big.txt","offset":2001,"limit":1}`))
+	if err != nil || !strings.Contains(sliced, "2001|L2001") {
+		t.Fatalf("offset/limit = %q %v", sliced, err)
 	}
 }
 
@@ -105,17 +134,41 @@ func TestShell(t *testing.T) {
 func TestBuiltinsRegister(t *testing.T) {
 	h := testHarness(t)
 	r := Builtins(h, nil)
-	if _, ok := r.Get("read_file"); !ok {
-		t.Fatal("missing read_file")
+	if _, ok := r.Get("file_read"); !ok {
+		t.Fatal("missing file_read")
 	}
-	if _, ok := r.Get("read_pdf"); !ok {
-		t.Fatal("missing read_pdf")
+	if _, ok := r.Get("pdf_read"); !ok {
+		t.Fatal("missing pdf_read")
 	}
 	if _, ok := r.Get("web_search"); !ok {
 		t.Fatal("missing web_search")
 	}
 	if _, ok := r.Get("delegate"); ok {
 		t.Fatal("delegate should be absent without delegator")
+	}
+}
+
+func TestToolAliases(t *testing.T) {
+	h := testHarness(t)
+	r := Builtins(h, nil)
+	got, ok := r.Get("read_pdf")
+	if !ok || got.Name() != "pdf_read" {
+		t.Fatalf("read_pdf alias = %v %v", got, ok)
+	}
+	if _, ok := r.Get("nope"); ok {
+		t.Fatal("expected missing nope")
+	}
+	for _, s := range r.Specs() {
+		if s.Name == "read_pdf" {
+			t.Fatal("alias leaked into Specs")
+		}
+	}
+	f := r.Filter([]string{"read_file"})
+	if _, ok := f.Get("file_read"); !ok {
+		t.Fatal("filter missed file_read via alias")
+	}
+	if _, ok := f.Get("pdf_read"); ok {
+		t.Fatal("filter kept unrelated tool")
 	}
 }
 
@@ -146,6 +199,227 @@ func TestWebSearch(t *testing.T) {
 	}
 	if _, err := tool.Run(context.Background(), json.RawMessage(`{"query":"  "}`)); err == nil {
 		t.Fatal("expected empty query error")
+	}
+}
+
+func TestWebFetchStripsHTMLKeepsJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/page":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, `<html><script>secret()</script><a href="https://example.com/x">Hi &amp; Co</a></html>`)
+		case "/img":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, `<html><body><img src="/x.png" alt="duck"></body></html>`)
+		case "/huge":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><body><p>%s</p></body></html>`, strings.Repeat("word ", 8000))
+		case "/json":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		case "/plainhtml":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, "<html><body>visible</body></html>")
+		case "/bin":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte{0x89, 0x50, 0x4e, 0x47})
+		case "/big":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte(strings.Repeat("a", utils.TextBodyCap+50)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	h := testHarness(t)
+	tool := NewFetch(h)
+	ctx := context.Background()
+
+	html, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/page")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(html, "<script") || strings.Contains(html, "<a") {
+		t.Fatalf("html tags leaked: %q", html)
+	}
+	if !strings.Contains(html, "https://example.com/x") || !strings.Contains(html, "Hi & Co") {
+		t.Fatalf("stripped html missing text: %q", html)
+	}
+
+	img, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/img")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(img, srv.URL+"/x.png") {
+		t.Fatalf("relative img src: %q", img)
+	}
+
+	huge, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/huge")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hugeBody := strings.TrimPrefix(huge, "status 200\n")
+	if !strings.Contains(hugeBody, fmt.Sprintf("[kept %d of ", utils.TextBodyCap)) {
+		t.Fatalf("missing kept marker: %q", hugeBody)
+	}
+	if !strings.Contains(hugeBody, " chars]") {
+		t.Fatalf("missing chars marker: %q", hugeBody)
+	}
+
+	js, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(js, `{"ok":true}`) {
+		t.Fatalf("json not raw: %q", js)
+	}
+
+	plain, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/plainhtml")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "<html") || !strings.Contains(plain, "visible") {
+		t.Fatalf("plain html sniff: %q", plain)
+	}
+
+	bin, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/bin")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bin, "image/png") || strings.Contains(bin, "\n\x89") {
+		t.Fatalf("binary: %q", bin)
+	}
+
+	big, err := tool.Run(ctx, json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL+"/big")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.TrimPrefix(big, "status 200\n")
+	wantMark := fmt.Sprintf("[kept %d of %d chars]", utils.TextBodyCap, utils.TextBodyCap+50)
+	if !strings.HasPrefix(body, strings.Repeat("a", utils.TextBodyCap)) || !strings.Contains(body, wantMark) {
+		t.Fatalf("cap marked = %q want %q", body, wantMark)
+	}
+}
+
+func TestWebFetchCacheNoCheckpoint(t *testing.T) {
+	h := testHarness(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><p>cached page</p></body></html>`)
+	}))
+	defer srv.Close()
+	got, err := NewFetch(h).Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"url":%q}`, srv.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "<html") {
+		t.Fatalf("html dumped: %q", got)
+	}
+	if !strings.Contains(got, "cached page") {
+		t.Fatalf("missing markdown: %q", got)
+	}
+	ents, err := os.ReadDir(filepath.Join(h.Home, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var html, md bool
+	for _, e := range ents {
+		switch {
+		case strings.HasPrefix(e.Name(), "fetch-") && strings.HasSuffix(e.Name(), ".html"):
+			html = true
+		case strings.HasPrefix(e.Name(), "fetch-") && strings.HasSuffix(e.Name(), ".md"):
+			md = true
+		}
+	}
+	if !html || !md {
+		t.Fatalf("cache files = %v", ents)
+	}
+	for _, r := range h.Session.Records() {
+		if r.Type == "checkpoint" {
+			t.Fatalf("cache wrote checkpoint: %#v", r)
+		}
+	}
+}
+
+func TestWebFetchHTMLOption(t *testing.T) {
+	h := testHarness(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body>src</body></html>`)
+	}))
+	defer srv.Close()
+	got, err := NewFetch(h).Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"url":%q,"html":true}`, srv.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "<html") {
+		t.Fatalf("expected capped html: %q", got)
+	}
+}
+
+func TestWebFetchPathPNGCheckpoint(t *testing.T) {
+	h := testHarness(t)
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+	}))
+	defer srv.Close()
+	got, err := NewFetch(h).Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"url":%q,"path":"out.png"}`, srv.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "saved out.png") {
+		t.Fatalf("missing saved: %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(h.Workspace.Root, "out.png"))
+	if err != nil || string(data[:4]) != "\x89PNG" {
+		t.Fatalf("png = %q %v", data, err)
+	}
+	var cps int
+	for _, r := range h.Session.Records() {
+		if r.Type == "checkpoint" && r.Path == "out.png" {
+			cps++
+		}
+	}
+	if cps < 1 {
+		t.Fatalf("missing checkpoint: %#v", h.Session.Records())
+	}
+}
+
+func TestWebFetchRiskForPath(t *testing.T) {
+	h := testHarness(t)
+	tool := NewFetch(h)
+	if got := EffectiveRisk(tool, json.RawMessage(`{"url":"http://example.com"}`)); got != harness.RiskNetwork {
+		t.Fatalf("no path risk = %s", got)
+	}
+	if got := EffectiveRisk(tool, json.RawMessage(`{"url":"http://example.com","path":"a.png"}`)); got != harness.RiskWrite {
+		t.Fatalf("path risk = %s", got)
+	}
+}
+
+func TestWebSearchCacheAndHTML(t *testing.T) {
+	h := testHarness(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body>results</body></html>`)
+	}))
+	defer srv.Close()
+	tool := &searchTool{h: h, client: srv.Client(), endpoint: srv.URL}
+	got, err := tool.Run(context.Background(), json.RawMessage(`{"query":"q"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "<html") {
+		t.Fatalf("html dumped: %q", got)
+	}
+	ents, err := os.ReadDir(filepath.Join(h.Home, "cache"))
+	if err != nil || len(ents) < 2 {
+		t.Fatalf("cache = %v %v", ents, err)
+	}
+	html, err := tool.Run(context.Background(), json.RawMessage(`{"query":"q","html":true}`))
+	if err != nil || !strings.Contains(html, "<html") {
+		t.Fatalf("html option = %q %v", html, err)
 	}
 }
 
@@ -239,7 +513,7 @@ func TestReadFilePDFHint(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := NewRead(h).Run(context.Background(), json.RawMessage(`{"path":"a.pdf"}`))
-	if err == nil || !strings.Contains(err.Error(), "read_pdf") {
+	if err == nil || !strings.Contains(err.Error(), "pdf_read") {
 		t.Fatalf("err = %v", err)
 	}
 }

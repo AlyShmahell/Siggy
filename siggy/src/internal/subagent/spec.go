@@ -23,17 +23,17 @@ func Builtins() []Spec {
 		{
 			Name:        "explore",
 			Description: "Read-only scout that maps a codebase and reports findings.",
-			Tools:       []string{"read_file", "read_pdf", "list_dir", "glob", "grep"},
+			Tools:       []string{"file_read", "pdf_read", "dir_list", "glob", "grep"},
 		},
 		{
 			Name:        "implement",
 			Description: "Makes focused code changes for a single task.",
-			Tools:       []string{"read_file", "read_pdf", "write_file", "edit_file", "list_dir", "glob", "grep", "shell", "todo_write"},
+			Tools:       []string{"file_read", "pdf_read", "file_write", "file_edit", "dir_list", "glob", "grep", "shell", "todo_write"},
 		},
 		{
 			Name:        "review",
 			Description: "Reviews local files and reports risks.",
-			Tools:       []string{"read_file", "read_pdf", "list_dir", "glob", "grep"},
+			Tools:       []string{"file_read", "pdf_read", "dir_list", "glob", "grep"},
 		},
 	}
 }

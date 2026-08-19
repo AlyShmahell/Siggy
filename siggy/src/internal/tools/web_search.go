@@ -7,26 +7,24 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
 	"siggy/src/internal/harness"
+	"siggy/src/internal/tools/utils"
 )
 
-const (
-	ddgLite       = "https://lite.duckduckgo.com/lite/"
-	searchRawCap  = 64 * 1024
-	searchTextCap = 32 * 1024
-)
+const ddgLite = "https://lite.duckduckgo.com/lite/"
 
 type searchTool struct {
+	h        *harness.Harness
 	client   *http.Client
 	endpoint string
 }
 
-func NewSearch() Tool {
+func NewSearch(h *harness.Harness) Tool {
 	return &searchTool{
+		h:        h,
 		client:   &http.Client{Timeout: 20 * time.Second},
 		endpoint: ddgLite,
 	}
@@ -40,12 +38,14 @@ func (t *searchTool) Risk() harness.Risk { return harness.RiskNetwork }
 func (t *searchTool) Schema() json.RawMessage {
 	return objectSchema(map[string]any{
 		"query": map[string]any{"type": "string"},
+		"html":  map[string]any{"type": "boolean", "description": "If true, also return capped raw HTML"},
 	}, []string{"query"})
 }
 
 func (t *searchTool) Run(ctx context.Context, raw json.RawMessage) (string, error) {
 	args, err := decode[struct {
 		Query string `json:"query"`
+		HTML  bool   `json:"html"`
 	}](raw)
 	if err != nil {
 		return "", err
@@ -79,43 +79,17 @@ func (t *searchTool) Run(ctx context.Context, raw json.RawMessage) (string, erro
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, searchRawCap))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, utils.FetchRawCap))
 	if err != nil {
 		return "", err
 	}
-	text := stripSearchHTML(string(body))
-	if len(text) > searchTextCap {
-		text = text[:searchTextCap]
+	md := utils.CapTextMarked(utils.HTMLToText(string(body), u.String()), utils.TextBodyCap)
+	if t.h != nil {
+		utils.WritePageCache(t.h.Home, "search", u.String(), body, md)
 	}
-	return fmt.Sprintf("status %d\n%s", resp.StatusCode, text), nil
-}
-
-var (
-	reScriptStyle = regexp.MustCompile(`(?is)<(script|style)\b[^>]*>.*?</(script|style)>`)
-	reHrefDouble  = regexp.MustCompile(`(?is)<a\b[^>]*href="([^"]+)"[^>]*>`)
-	reHrefSingle  = regexp.MustCompile(`(?is)<a\b[^>]*href='([^']+)'[^>]*>`)
-	reTags        = regexp.MustCompile(`(?s)<[^>]+>`)
-	reSpace       = regexp.MustCompile(`\s+`)
-)
-
-func stripSearchHTML(s string) string {
-	s = reScriptStyle.ReplaceAllString(s, " ")
-	s = reHrefDouble.ReplaceAllString(s, " $1 ")
-	s = reHrefSingle.ReplaceAllString(s, " $1 ")
-	s = reTags.ReplaceAllString(s, " ")
-	s = unescapeSearchEntities(s)
-	s = reSpace.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
-}
-
-func unescapeSearchEntities(s string) string {
-	return strings.NewReplacer(
-		"&nbsp;", " ",
-		"&amp;", "&",
-		"&lt;", "<",
-		"&gt;", ">",
-		"&quot;", `"`,
-		"&#39;", "'",
-		"&apos;", "'",
-	).Replace(s)
+	out := fmt.Sprintf("status %d\n%s", resp.StatusCode, md)
+	if args.HTML {
+		out += "\n" + utils.CapTextMarked(string(body), utils.TextBodyCap)
+	}
+	return out, nil
 }

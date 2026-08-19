@@ -23,20 +23,31 @@ func (m *model) contextWindow() int {
 	return 128000
 }
 
+func (m *model) usageParts() loop.UsageParts {
+	var msgs []llm.Message
+	var specs []llm.ToolSpec
+	if m.g != nil && m.g.Engine != nil {
+		msgs = m.g.Engine.Messages
+		if m.g.Engine.Tools != nil {
+			specs = m.g.Engine.Tools.Specs()
+		}
+	}
+	return loop.EstimateParts(msgs, specs, m.ta.Value())
+}
+
 func (m *model) usageUsed() int {
 	if m.tokensUsed > 0 {
 		return m.tokensUsed
 	}
-	n := 0
+	var msgs []llm.Message
 	var specs []llm.ToolSpec
 	if m.g != nil && m.g.Engine != nil {
+		msgs = m.g.Engine.Messages
 		if m.g.Engine.Tools != nil {
 			specs = m.g.Engine.Tools.Specs()
 		}
-		n = loop.EstimateRequest(m.g.Engine.Messages, specs)
 	}
-	n += utf8.RuneCountInString(m.ta.Value()) / 4
-	return n
+	return loop.EstimateRequest(msgs, specs) + utf8.RuneCountInString(m.ta.Value())/4
 }
 
 func (m *model) applyUsageFromRecords(recs []harness.Record) {
@@ -132,36 +143,91 @@ func clampByte(n int) int {
 	return n
 }
 
+func formatTok(n int) string {
+	if n < 0 {
+		n = 0
+	}
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	if n < 10000 {
+		t := (n + 50) / 100
+		if t%10 == 0 {
+			return fmt.Sprintf("%dk", t/10)
+		}
+		return fmt.Sprintf("%d.%dk", t/10, t%10)
+	}
+	return fmt.Sprintf("%dk", (n+500)/1000)
+}
+
+func usageBreakdownLine(p loop.UsageParts, maxW int) string {
+	var parts []string
+	if p.System > 0 {
+		parts = append(parts, "s"+formatTok(p.System))
+	}
+	if p.Tools > 0 {
+		parts = append(parts, "t"+formatTok(p.Tools))
+	}
+	if p.Chat > 0 {
+		parts = append(parts, "c"+formatTok(p.Chat))
+	}
+	if p.Draft > 0 {
+		parts = append(parts, "d"+formatTok(p.Draft))
+	}
+	s := strings.Join(parts, " ")
+	if maxW > 0 {
+		r := []rune(s)
+		if len(r) > maxW {
+			s = string(r[:maxW])
+		}
+	}
+	return s
+}
+
+func padUsageInner(s string, w int) string {
+	n := lipgloss.Width(s)
+	if n >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-n)
+}
+
+func centerUsageInner(s string, w int) string {
+	n := lipgloss.Width(s)
+	if n >= w {
+		return s
+	}
+	left := (w - n) / 2
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", w-n-left)
+}
+
 func (m *model) usageBox() (top, mid, bot string) {
 	used := m.usageUsed()
 	limit := m.contextWindow()
 	label := usageBadge(used, limit)
-	if utf8.RuneCountInString(label) < 4 {
-		label = " " + label
+	br := usageBreakdownLine(m.usageParts(), 0)
+	if br == "" {
+		br = "—"
 	}
 	col := usageColor(used, limit)
-	if m.hovered.Kind == KindUsage || m.float == floatUsage {
-		st := lipgloss.NewStyle().Foreground(colBg).Background(col)
-		inner := " " + label + " "
-		w := lipgloss.Width(inner)
-		if w < 5 {
-			inner = padPlain(inner, 5)
-			w = 5
-		}
-		top = st.Render("┌" + strings.Repeat("─", w) + "┐")
-		mid = st.Render("│") + st.Bold(true).Render(inner) + st.Render("│")
-		bot = st.Render("└" + strings.Repeat("─", w) + "┘")
-		return top, mid, bot
+	brInner := " " + br + " "
+	pctInner := " " + label + " "
+	w := lipgloss.Width(brInner)
+	if pw := lipgloss.Width(pctInner); pw > w {
+		w = pw
 	}
-	st := lipgloss.NewStyle().Foreground(col).Background(colPanel)
-	inner := " " + label + " "
-	w := lipgloss.Width(inner)
 	if w < 5 {
-		inner = padPlain(inner, 5)
 		w = 5
 	}
-	top = st.Render("┌" + strings.Repeat("─", w) + "┐")
-	mid = st.Render("│") + st.Bold(true).Render(inner) + st.Render("│")
+	brInner = padUsageInner(brInner, w)
+	pctInner = centerUsageInner(pctInner, w)
+	stFg, stBg := col, colPanel
+	if m.hovered.Kind == KindUsage || m.float == floatUsage {
+		stFg, stBg = colBg, col
+	}
+	st := lipgloss.NewStyle().Foreground(stFg).Background(stBg)
+	top = st.Render("┌") + st.Render(brInner) + st.Render("┐")
+	mid = st.Render("│") + st.Bold(true).Render(pctInner) + st.Render("│")
 	bot = st.Render("└" + strings.Repeat("─", w) + "┘")
 	return top, mid, bot
 }

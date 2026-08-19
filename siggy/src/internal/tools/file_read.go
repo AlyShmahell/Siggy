@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"unicode/utf8"
 
 	"siggy/src/internal/harness"
 )
+
+const readDefaultLines = 2000
 
 type readTool struct {
 	h *harness.Harness
@@ -16,9 +19,9 @@ type readTool struct {
 
 func NewRead(h *harness.Harness) Tool { return &readTool{h: h} }
 
-func (t *readTool) Name() string { return "read_file" }
+func (t *readTool) Name() string { return "file_read" }
 func (t *readTool) Description() string {
-	return "Read a UTF-8 text file from the workspace. Use offset/limit for large files (1-based lines)."
+	return "Read a UTF-8 text file from the workspace. Output is 1-based numbered lines. Uncapped reads stop at 2000 lines; use offset/limit for the rest. To show a workspace image, include ![alt](relative-path) in your reply. Use pdf_read for PDFs."
 }
 func (t *readTool) Risk() harness.Risk { return harness.RiskRead }
 func (t *readTool) Schema() json.RawMessage {
@@ -47,7 +50,7 @@ func (t *readTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 		return "", err
 	}
 	if len(data) >= 4 && string(data[:4]) == "%PDF" {
-		return "", fmt.Errorf("%s is a PDF; use read_pdf", args.Path)
+		return "", fmt.Errorf("%s is a PDF; use pdf_read", args.Path)
 	}
 	if !utf8.Valid(data) {
 		return "", fmt.Errorf("%s is not valid UTF-8", args.Path)
@@ -55,31 +58,37 @@ func (t *readTool) Run(_ context.Context, raw json.RawMessage) (string, error) {
 	if len(data) > 512*1024 && args.Limit == 0 {
 		return "", fmt.Errorf("%s is %d bytes; pass offset/limit", args.Path, len(data))
 	}
-	text := string(data)
-	if args.Offset > 0 || args.Limit > 0 {
-		text = sliceLines(text, args.Offset, args.Limit)
+	text, truncated, total := sliceLines(string(data), args.Offset, args.Limit)
+	if truncated && args.Limit <= 0 {
+		text += fmt.Sprintf("[%s has %d lines; use offset/limit]\n", args.Path, total)
 	}
 	return text, nil
 }
 
-func sliceLines(text string, offset, limit int) string {
+func sliceLines(text string, offset, limit int) (string, bool, int) {
 	lines := splitKeep(text)
+	total := len(lines)
 	start := 0
 	if offset > 0 {
 		start = offset - 1
 	}
-	if start > len(lines) {
-		return ""
+	if start > total {
+		return "", false, total
 	}
-	end := len(lines)
-	if limit > 0 && start+limit < end {
+	if limit <= 0 {
+		limit = readDefaultLines
+	}
+	end := total
+	truncated := false
+	if start+limit < end {
 		end = start + limit
+		truncated = true
 	}
-	out := ""
+	var b strings.Builder
 	for i := start; i < end; i++ {
-		out += fmt.Sprintf("%6d|%s\n", i+1, lines[i])
+		fmt.Fprintf(&b, "%6d|%s\n", i+1, lines[i])
 	}
-	return out
+	return b.String(), truncated, total
 }
 
 func splitKeep(s string) []string {

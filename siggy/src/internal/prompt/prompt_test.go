@@ -42,7 +42,7 @@ func TestSystemFillsPlaceholders(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
 	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "system.md"), []byte("W={{workspace}} M={{mode}}\n{{tools}}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "system.md"), []byte("W={{workspace}} M={{mode}}\n{{tools}}\nIf a tool result says cleared, call that tool again. Do not invent the missing text.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := Seed(src, DestDir(home)); err != nil {
@@ -59,11 +59,14 @@ func TestSystemFillsPlaceholders(t *testing.T) {
 	if !strings.Contains(got, "M=act") {
 		t.Fatalf("mode: %q", got)
 	}
-	if !strings.Contains(got, "read_pdf") {
+	if !strings.Contains(got, "pdf_read") {
 		t.Fatalf("tools: %q", got)
 	}
 	if strings.Contains(got, "{{") {
 		t.Fatalf("placeholder left: %q", got)
+	}
+	if !strings.Contains(got, "If a tool result says cleared, call that tool again") {
+		t.Fatalf("missing cleared-tools line: %q", got)
 	}
 }
 
@@ -98,5 +101,18 @@ func TestInstructionStackAndMemoryIndex(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestSystemClearedLineWithoutTemplate(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	h, err := harness.New(root, home, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := System(h, tools.Builtins(h, nil), "")
+	if strings.Contains(got, "If a tool result says cleared, call that tool again") {
+		t.Fatalf("cleared-tools line should come from system.md, not Go: %q", got)
 	}
 }

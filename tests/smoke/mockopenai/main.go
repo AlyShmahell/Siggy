@@ -46,9 +46,9 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(user, "delegate"):
 		payload = toolChunk("c-del", "delegate", `{"agent":"explore","task":"map the workspace"}`)
 	case strings.Contains(user, "write"):
-		payload = toolChunk("c-w", "write_file", `{"path":"smoke.txt","content":"from-agent"}`)
+		payload = toolChunk("c-w", "file_write", `{"path":"smoke.txt","content":"from-agent"}`)
 	default:
-		payload = toolChunk("c-ls", "list_dir", `{}`)
+		payload = toolChunk("c-ls", "dir_list", `{}`)
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

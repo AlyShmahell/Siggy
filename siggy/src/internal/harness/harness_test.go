@@ -44,7 +44,7 @@ func TestPlanModeBlocksWrites(t *testing.T) {
 
 func TestApprovalAuto(t *testing.T) {
 	bus := NewApprovalBus(true)
-	d, err := bus.Ask(context.Background(), ApprovalRequest{Tool: "write_file"})
+	d, err := bus.Ask(context.Background(), ApprovalRequest{Tool: "file_write"})
 	if err != nil || !d.Allowed() {
 		t.Fatalf("auto approve failed: %v %v", d, err)
 	}

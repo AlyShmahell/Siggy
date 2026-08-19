@@ -425,17 +425,8 @@ func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 		m.lines = append(m.lines, line{kind: "tool", tool: ev.Tool, text: ev.Args})
 	case loop.KindToolEnd:
 		text := ev.Text
-		kind := "ok"
-		if ev.Err != nil {
-			kind = "err"
-		} else if isDiffResult(text) {
-			kind = "diff"
-			if len(text) > 8192 {
-				text = text[:8192] + "…"
-			}
-		} else if len(text) > 240 {
-			text = text[:240] + "…"
-		}
+		kind := toolResultKind(text, ev.Err)
+		text = capToolDisplay(ev.Tool, kind, text)
 		m.lines = append(m.lines, line{kind: kind, tool: ev.Tool, text: text})
 	case loop.KindApproval:
 		m.approval = ev.Approval
@@ -445,9 +436,11 @@ func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		if ev.Err != nil {
 			m.err = ev.Err.Error()
-			m.lines = append(m.lines, line{kind: "err", text: ev.Err.Error()})
 			if ev.Tool == "" {
+				m.lines = append(m.lines, line{kind: "caution", text: formatCautionMarkdown(ev.Err.Error())})
 				m.modelHealth = "err"
+			} else {
+				m.lines = append(m.lines, line{kind: "err", text: ev.Err.Error()})
 			}
 		}
 	case loop.KindDone:

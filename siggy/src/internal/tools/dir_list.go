@@ -16,7 +16,7 @@ type listTool struct {
 
 func NewList(h *harness.Harness) Tool { return &listTool{h: h} }
 
-func (t *listTool) Name() string        { return "list_dir" }
+func (t *listTool) Name() string        { return "dir_list" }
 func (t *listTool) Description() string { return "List entries in a workspace directory." }
 func (t *listTool) Risk() harness.Risk  { return harness.RiskRead }
 func (t *listTool) Schema() json.RawMessage {

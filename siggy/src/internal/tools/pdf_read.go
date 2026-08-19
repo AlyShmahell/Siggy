@@ -29,7 +29,7 @@ type pdfTool struct {
 
 func NewReadPDF(h *harness.Harness) Tool { return &pdfTool{h: h} }
 
-func (t *pdfTool) Name() string { return "read_pdf" }
+func (t *pdfTool) Name() string { return "pdf_read" }
 func (t *pdfTool) Description() string {
 	return "Rasterize PDF pages to images for a vision-capable model. Use for papers, figures, tables, and equations. pages is like \"1-4\" or \"3,7\" (default first 4, max 8)."
 }

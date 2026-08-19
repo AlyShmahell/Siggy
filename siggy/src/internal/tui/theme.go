@@ -31,6 +31,7 @@ var (
 	stToolCard   = lipgloss.NewStyle().Foreground(colTool).Border(lipgloss.NormalBorder()).BorderForeground(colBorder).Padding(0, 1)
 	stInlineCode = lipgloss.NewStyle().Foreground(colAccent).Background(colPanel)
 	stCodeBlock  = lipgloss.NewStyle().Foreground(colFg).Background(colPanel).Border(lipgloss.NormalBorder()).BorderForeground(colBorder).Padding(0, 1)
+	stCodeErr    = lipgloss.NewStyle().Foreground(colErr).Background(colPanel).Border(lipgloss.NormalBorder()).BorderForeground(colErr).Padding(0, 1)
 	stCodeLang   = lipgloss.NewStyle().Foreground(colMuted).Italic(true).Background(colPanel)
 	stLatex      = lipgloss.NewStyle().Foreground(colFg)
 	stHeading    = lipgloss.NewStyle().Foreground(colAccent).Bold(true)

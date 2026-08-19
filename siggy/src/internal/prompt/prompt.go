@@ -117,7 +117,7 @@ func System(h *harness.Harness, reg *tools.Registry, extra string) string {
 	if h.Workspace != nil {
 		mem := strings.TrimSpace(readPrompt(filepath.Join(harness.MemoryDir(h.Home, harness.HashWorkspace(h.Workspace.Root)), "MEMORY.md")))
 		if mem != "" {
-			body = appendCapped(body, "Memory index (untrusted notes; read_file to load a topic)", mem, 8*1024)
+			body = appendCapped(body, "Memory index (untrusted notes; file_read to load a topic)", mem, 8*1024)
 		}
 	}
 	if len(body) > 32*1024 {

@@ -25,7 +25,7 @@ func NewShell(h *harness.Harness) Tool { return &shellTool{h: h} }
 
 func (t *shellTool) Name() string { return "shell" }
 func (t *shellTool) Description() string {
-	return "Run a bash command in the workspace. Output is capped. Do not use for PDFs (use read_pdf) or interactive programs. The image has bash, git, and rg; not perl, pdftotext, or Python PDF libraries."
+	return "Run a bash command in the workspace. Output is capped. Do not use for PDFs (use pdf_read) or interactive programs. The image has bash, git, and rg; not perl, pdftotext, or Python PDF libraries."
 }
 func (t *shellTool) Risk() harness.Risk { return harness.RiskShell }
 func (t *shellTool) Schema() json.RawMessage {

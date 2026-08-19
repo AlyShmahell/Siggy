@@ -19,7 +19,7 @@ func TestDelegateExplore(t *testing.T) {
 	}
 	reg := tools.Builtins(h, nil)
 	fake := &llm.Scripted{Steps: []llm.ScriptedStep{
-		{Calls: []llm.ToolCall{{ID: "1", Name: "list_dir", Args: json.RawMessage(`{}`)}}},
+		{Calls: []llm.ToolCall{{ID: "1", Name: "dir_list", Args: json.RawMessage(`{}`)}}},
 		{Text: "empty workspace"},
 	}}
 	mgr := &Manager{Parent: h, Client: fake, Tools: reg}

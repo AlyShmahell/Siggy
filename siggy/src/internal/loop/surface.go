@@ -155,16 +155,51 @@ func EstimateTokens(msgs []llm.Message) int {
 func EstimateRequest(msgs []llm.Message, tools []llm.ToolSpec) int {
 	n := 0
 	for _, m := range msgs {
-		n += utf8.RuneCountInString(m.Content)
-		for _, tc := range m.ToolCalls {
-			n += utf8.RuneCountInString(tc.Name)
-			n += utf8.RuneCountInString(string(tc.Args))
+		n += messageRunes(m)
+	}
+	for _, t := range tools {
+		n += toolSpecRunes(t)
+	}
+	return n / 4
+}
+
+type UsageParts struct {
+	System, Tools, Chat, Draft int
+}
+
+func (p UsageParts) Total() int {
+	return p.System + p.Tools + p.Chat + p.Draft
+}
+
+func messageRunes(m llm.Message) int {
+	n := utf8.RuneCountInString(m.Content)
+	for _, tc := range m.ToolCalls {
+		n += utf8.RuneCountInString(tc.Name)
+		n += utf8.RuneCountInString(string(tc.Args))
+	}
+	return n
+}
+
+func toolSpecRunes(t llm.ToolSpec) int {
+	return utf8.RuneCountInString(t.Name) + utf8.RuneCountInString(t.Description) + utf8.RuneCountInString(string(t.Parameters))
+}
+
+func EstimateParts(msgs []llm.Message, tools []llm.ToolSpec, draft string) UsageParts {
+	var p UsageParts
+	for _, m := range msgs {
+		r := messageRunes(m)
+		if m.Role == llm.RoleSystem {
+			p.System += r
+		} else {
+			p.Chat += r
 		}
 	}
 	for _, t := range tools {
-		n += utf8.RuneCountInString(t.Name)
-		n += utf8.RuneCountInString(t.Description)
-		n += utf8.RuneCountInString(string(t.Parameters))
+		p.Tools += toolSpecRunes(t)
 	}
-	return n / 4
+	p.System /= 4
+	p.Tools /= 4
+	p.Chat /= 4
+	p.Draft = utf8.RuneCountInString(draft) / 4
+	return p
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -13,27 +14,37 @@ import (
 )
 
 const (
-	defaultWindow   = 128000
-	summaryReserve  = 20000
-	autoBuffer      = 13000
-	warnBuffer      = 20000
-	hardBuffer      = 3000
-	defaultPct      = 0.7
-	keepToolResults = 5
-	pruneSentinel   = "[Old tool result content cleared]"
-	maxCompactFail  = 3
+	defaultWindow     = 128000
+	summaryReserve    = 20000
+	autoBuffer        = 13000
+	warnBuffer        = 20000
+	hardBuffer        = 3000
+	defaultPct        = 0.7
+	keepDumpResults   = 5
+	keepFileResults   = 5
+	prunePreviewRunes = 300
+	pruneCleared      = "[cleared; call this tool again if you need the rest]"
+	pruneSentinel     = pruneCleared
+	maxCompactFail    = 3
 )
 
 var bulkyTools = map[string]bool{
-	"read_file":  true,
+	"file_read":  true,
 	"grep":       true,
 	"glob":       true,
-	"list_dir":   true,
+	"dir_list":   true,
 	"shell":      true,
 	"web_fetch":  true,
 	"web_search": true,
-	"read_pdf":   true,
+	"pdf_read":   true,
 }
+
+var dumpTools = map[string]bool{
+	"web_search": true,
+	"web_fetch":  true,
+}
+
+var reHTTPLink = regexp.MustCompile(`https?://[^\s<>"']+`)
 
 type Thresholds struct {
 	Warn, Auto, Hard, Window int
@@ -87,8 +98,7 @@ func (e *Engine) maybeCompact(ctx context.Context, emit func(Event), forceFast, 
 		return
 	}
 	emit(Event{Kind: KindNode, Node: "Compact"})
-	e.pruneToolResults()
-	e.Messages = DeriveMessages(e.Harness.Session.Records())
+	e.applyPrune()
 	used = EstimateTokens(e.Messages)
 	e.LastPrompt = used
 	if forceFast && !forceLLM && used < th.Auto {
@@ -113,6 +123,13 @@ func (e *Engine) maybeCompact(ctx context.Context, emit func(Event), forceFast, 
 	}
 }
 
+func (e *Engine) applyPrune() {
+	e.pruneToolResults()
+	if e.Harness != nil && e.Harness.Session != nil {
+		e.Messages = DeriveMessages(e.Harness.Session.Records())
+	}
+}
+
 func (e *Engine) pruneToolResults() {
 	if e.Harness == nil || e.Harness.Session == nil {
 		return
@@ -122,7 +139,6 @@ func (e *Engine) pruneToolResults() {
 	if e.Harness.Workspace != nil {
 		mem = harness.MemoryDir(e.Harness.Home, harness.HashWorkspace(e.Harness.Workspace.Root))
 	}
-	var bulky []harness.Record
 	shadowed := map[int]bool{}
 	for _, r := range recs {
 		if r.Type == "compact" || r.Type == "rewind" {
@@ -138,6 +154,7 @@ func (e *Engine) pruneToolResults() {
 			shadowed[r.ReplacesSeq] = true
 		}
 	}
+	var dump, files []harness.Record
 	for _, r := range recs {
 		if r.Type != "tool" || shadowed[r.Seq] {
 			continue
@@ -145,7 +162,7 @@ func (e *Engine) pruneToolResults() {
 		if !bulkyTools[r.Tool] {
 			continue
 		}
-		if strings.Contains(r.Result, pruneSentinel) {
+		if strings.Contains(r.Result, pruneCleared) {
 			continue
 		}
 		if strings.HasPrefix(strings.ToLower(r.Result), "denied") || strings.Contains(strings.ToLower(r.Result), "error") {
@@ -157,26 +174,177 @@ func (e *Engine) pruneToolResults() {
 		if utf8.RuneCountInString(r.Result) < 200 {
 			continue
 		}
-		bulky = append(bulky, r)
+		if !followedByAssistant(recs, r.Seq) {
+			continue
+		}
+		if dumpTools[r.Tool] {
+			dump = append(dump, r)
+		} else {
+			files = append(files, r)
+		}
 	}
-	drop := len(bulky) - keepToolResults
+	dump = e.dropSuperseded(dump)
+	files = e.dropSuperseded(files)
+	e.dropOldest(dump, keepDumpResults)
+	e.dropOldest(files, keepFileResults)
+}
+
+func pruneKey(r harness.Record) string {
+	var m map[string]any
+	_ = json.Unmarshal([]byte(r.Args), &m)
+	arg := func(k string) string {
+		if m == nil {
+			return ""
+		}
+		v, ok := m[k]
+		if !ok || v == nil {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+	id := func(parts ...string) string {
+		for _, p := range parts {
+			if p != "" {
+				return r.Tool + "\t" + strings.Join(parts, "\t")
+			}
+		}
+		return r.Tool + "\t" + r.CallID
+	}
+	switch r.Tool {
+	case "file_read", "pdf_read", "dir_list":
+		return id(arg("path"))
+	case "web_fetch":
+		return id(arg("url"))
+	case "web_search":
+		return id(arg("query"))
+	case "grep", "glob":
+		p, path := arg("pattern"), arg("path")
+		if p == "" && path == "" {
+			return r.Tool + "\t" + r.CallID
+		}
+		return r.Tool + "\t" + p + "\t" + path
+	case "shell":
+		return id(arg("command"))
+	default:
+		return r.Tool + "\t" + r.CallID
+	}
+}
+
+func (e *Engine) dropSuperseded(bulky []harness.Record) []harness.Record {
+	seen := map[string]bool{}
+	var keep []harness.Record
+	for i := len(bulky) - 1; i >= 0; i-- {
+		r := bulky[i]
+		k := pruneKey(r)
+		if seen[k] {
+			e.stubRecord(r)
+			continue
+		}
+		seen[k] = true
+		keep = append(keep, r)
+	}
+	for i, j := 0, len(keep)-1; i < j; i, j = i+1, j-1 {
+		keep[i], keep[j] = keep[j], keep[i]
+	}
+	return keep
+}
+
+func followedByAssistant(recs []harness.Record, seq int) bool {
+	for _, r := range recs {
+		if r.Type == "assistant" && r.Seq > seq {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) dropOldest(bulky []harness.Record, keep int) {
+	drop := len(bulky) - keep
 	if drop <= 0 {
 		return
 	}
 	for _, r := range bulky[:drop] {
-		_ = e.Harness.Session.Append(harness.Record{
-			Type:        "prune",
-			Tool:        r.Tool,
-			CallID:      r.CallID,
-			Args:        r.Args,
-			Result:      pruneSentinel,
-			ReplacesSeq: r.Seq,
-		})
+		e.stubRecord(r)
 	}
 }
 
+func (e *Engine) stubRecord(r harness.Record) {
+	_ = e.Harness.Session.Append(harness.Record{
+		Type:        "prune",
+		Tool:        r.Tool,
+		CallID:      r.CallID,
+		Args:        r.Args,
+		Result:      pruneStub(r),
+		ReplacesSeq: r.Seq,
+	})
+}
+
+func pruneStub(r harness.Record) string {
+	var b strings.Builder
+	b.WriteString(r.Tool)
+	if arg := pruneArgSummary(r.Args); arg != "" {
+		b.WriteByte(' ')
+		b.WriteString(arg)
+	}
+	b.WriteByte('\n')
+	b.WriteString(prunePreview(r.Tool, r.Result))
+	b.WriteByte('\n')
+	b.WriteString(pruneCleared)
+	return b.String()
+}
+
+func pruneArgSummary(args string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(args), &m); err != nil {
+		s := strings.TrimSpace(args)
+		return truncateRunes(s, 80)
+	}
+	for _, k := range []string{"query", "url", "path", "command", "pattern"} {
+		v, ok := m[k]
+		if !ok || v == nil {
+			continue
+		}
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if s == "" {
+			continue
+		}
+		return k + "=" + truncateRunes(s, 80)
+	}
+	return ""
+}
+
+func prunePreview(tool, result string) string {
+	if tool == "web_search" || tool == "web_fetch" {
+		if links := httpLinks(result); len(links) > 0 {
+			return strings.Join(links, " ")
+		}
+	}
+	return truncateRunes(strings.TrimSpace(result), prunePreviewRunes)
+}
+
+func httpLinks(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range reHTTPLink.FindAllString(s, 8) {
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 func isMemoryRead(r harness.Record, memDir string) bool {
-	if r.Tool != "read_file" {
+	if r.Tool != "file_read" {
 		return false
 	}
 	low := strings.ToLower(r.Args + r.Path)

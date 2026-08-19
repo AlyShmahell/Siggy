@@ -25,6 +25,17 @@ type Delegator interface {
 	Delegate(ctx context.Context, agent, task string) (string, error)
 }
 
+type RiskForArgs interface {
+	RiskFor(args json.RawMessage) harness.Risk
+}
+
+func EffectiveRisk(t Tool, args json.RawMessage) harness.Risk {
+	if r, ok := t.(RiskForArgs); ok {
+		return r.RiskFor(args)
+	}
+	return t.Risk()
+}
+
 func mustSchema(v any) json.RawMessage {
 	raw, err := json.Marshal(v)
 	if err != nil {

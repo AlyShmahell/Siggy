@@ -72,22 +72,24 @@ func (s *Scheduler) execOne(ctx context.Context, call llm.ToolCall, emit func(Ev
 		emit(Event{Kind: KindError, Tool: call.Name, CallID: call.ID, Err: err})
 		return toolMessage(call, err.Error())
 	}
+	call.Name = tool.Name()
 	args := string(call.Args)
 	if err := s.harness.Loops.Observe(call.Name, args); err != nil {
 		emit(Event{Kind: KindError, Tool: call.Name, CallID: call.ID, Err: err})
 		return toolMessage(call, err.Error())
 	}
-	if err := s.harness.Mode.Allows(tool.Risk()); err != nil {
+	risk := tools.EffectiveRisk(tool, call.Args)
+	if err := s.harness.Mode.Allows(risk); err != nil {
 		emit(Event{Kind: KindError, Tool: call.Name, CallID: call.ID, Err: err})
 		return toolMessage(call, err.Error())
 	}
 
-	if tool.Risk() != harness.RiskRead {
+	if risk != harness.RiskRead {
 		req := harness.ApprovalRequest{
 			ID:      call.ID,
 			Tool:    call.Name,
 			Summary: summarize(call.Name, args),
-			Risk:    string(tool.Risk()),
+			Risk:    string(risk),
 			Reply:   make(chan harness.Decision, 1),
 		}
 		if !s.harness.Approvals.Auto() {

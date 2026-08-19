@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestParseInlineCode(t *testing.T) {
@@ -311,6 +313,24 @@ func TestTableSepIsNotHR(t *testing.T) {
 	}
 }
 
+func TestRenderTableImageCellMissingFile(t *testing.T) {
+	forceColor(t)
+	src := "| Name | Photo |\n|------|-------|\n| Duck | ![diagram](foo.png) |\n"
+	got := stripANSI(renderRich(src, 80, true))
+	if !strings.Contains(got, "Duck") || !strings.Contains(got, "diagram") {
+		t.Fatalf("missing cells: %q", got)
+	}
+	if !strings.Contains(got, "│") {
+		t.Fatalf("missing columns: %q", got)
+	}
+	if strings.Contains(got, "![") {
+		t.Fatalf("markdown leaked: %q", got)
+	}
+	if strings.Contains(got, "▀") {
+		t.Fatalf("preview without file: %q", got)
+	}
+}
+
 func TestParseMarkdownImage(t *testing.T) {
 	segs := parseMarkdown("see ![diagram](foo.png) here")
 	var img mdSeg
@@ -344,6 +364,23 @@ func TestParseMarkdownImage(t *testing.T) {
 	if !strings.Contains(fences[0].text, "![x](foo.png)") {
 		t.Fatalf("fence body = %#v", fences[0])
 	}
+	tick := parseMarkdown("see `![diagram](foo.png)` here")
+	found = false
+	for _, s := range tick {
+		if s.kind == mdImage {
+			img = s
+			found = true
+		}
+	}
+	if !found || img.text != "diagram" || img.lang != "foo.png" {
+		t.Fatalf("tick image = %#v", tick)
+	}
+	remoteTick := parseMarkdown("`![x](https://ex.com/a.png)`")
+	for _, s := range remoteTick {
+		if s.kind == mdImage {
+			t.Fatalf("remote tick became image: %#v", remoteTick)
+		}
+	}
 }
 
 func TestRenderImageCaptionNoAPC(t *testing.T) {
@@ -351,9 +388,65 @@ func TestRenderImageCaptionNoAPC(t *testing.T) {
 	got := renderRich("![diagram](foo.png)", 40, true)
 	plain := stripANSI(got)
 	if !strings.Contains(plain, "diagram") {
-		t.Fatalf("missing caption: %q", plain)
+		t.Fatalf("missing alt: %q", plain)
+	}
+	if strings.Contains(plain, "![") {
+		t.Fatalf("markdown leaked: %q", plain)
 	}
 	if strings.Contains(got, "\x1b_G") {
 		t.Fatalf("APC leaked: %q", got)
+	}
+	empty := stripANSI(renderRich("![](foo.png)", 40, true))
+	if !strings.Contains(empty, "[image]") {
+		t.Fatalf("empty alt: %q", empty)
+	}
+}
+
+func TestParseCautionBeforeQuote(t *testing.T) {
+	src := "> [!CAUTION]\n> HTTP 401 Unauthorized\n> body text\n\n> a quote"
+	segs := parseMarkdown(src)
+	var caution, quote mdSeg
+	for _, s := range segs {
+		switch s.kind {
+		case mdCaution:
+			caution = s
+		case mdQuote:
+			quote = s
+		}
+	}
+	if caution.kind != mdCaution || !strings.Contains(caution.text, "HTTP 401") || !strings.Contains(caution.text, "body text") {
+		t.Fatalf("caution = %#v segs=%#v", caution, segs)
+	}
+	if quote.kind != mdQuote || quote.text != "a quote" {
+		t.Fatalf("quote = %#v segs=%#v", quote, segs)
+	}
+	tight := parseMarkdown(">[!caution]\n> nope")
+	if len(tight) == 0 || tight[0].kind != mdCaution {
+		t.Fatalf("tight = %#v", tight)
+	}
+}
+
+func TestRenderCautionHTTP401Wraps(t *testing.T) {
+	forceColor(t)
+	body := strings.Repeat("unauthorized-detail ", 30)
+	src := formatCautionMarkdown("llm http 401: " + body)
+	got := renderRich(src, 40, true)
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "CAUTION") {
+		t.Fatalf("missing caution: %q", plain)
+	}
+	if !strings.Contains(plain, "HTTP 401 Unauthorized") {
+		t.Fatalf("missing title: %q", plain)
+	}
+	if strings.Contains(plain, "[!CAUTION]") {
+		t.Fatalf("marker leaked: %q", plain)
+	}
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("expected wrap: %q", plain)
+	}
+	for i, ln := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(ln); w > 40 {
+			t.Fatalf("line %d width %d > 40: %q", i, w, ln)
+		}
 	}
 }

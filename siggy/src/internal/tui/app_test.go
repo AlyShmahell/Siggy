@@ -163,7 +163,7 @@ func TestModeChipToggles(t *testing.T) {
 
 func TestApprovalRectsInsideModal(t *testing.T) {
 	m := testModel(t)
-	m.approval = &harness.ApprovalRequest{Tool: "write_file", Risk: "write", Summary: "x", Reply: make(chan harness.Decision, 1)}
+	m.approval = &harness.ApprovalRequest{Tool: "file_write", Risk: "write", Summary: "x", Reply: make(chan harness.Decision, 1)}
 	_ = m.View()
 	if m.reg.modal.W == 0 {
 		t.Fatal("modal rect empty")
@@ -201,7 +201,7 @@ func TestApprovalRectsInsideModal(t *testing.T) {
 func TestApprovalAllowOnceClosesAndLogs(t *testing.T) {
 	m := testModel(t)
 	reply := make(chan harness.Decision, 1)
-	m.approval = &harness.ApprovalRequest{Tool: "write_file", Risk: "write", Summary: "fibonacci.py", Reply: reply}
+	m.approval = &harness.ApprovalRequest{Tool: "file_write", Risk: "write", Summary: "fibonacci.py", Reply: reply}
 	m.choice = 0
 	next, _ := m.onKey(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := next.(model)
@@ -220,7 +220,7 @@ func TestApprovalAllowOnceClosesAndLogs(t *testing.T) {
 	default:
 		t.Fatal("no decision on Reply")
 	}
-	if !hasLine(nm.lines, "sys", "approve write_file (write): fibonacci.py") {
+	if !hasLine(nm.lines, "sys", "approve file_write (write): fibonacci.py") {
 		t.Fatalf("missing Q: %#v", nm.lines)
 	}
 	if !hasLine(nm.lines, "sys", "→ allow once") {
@@ -231,7 +231,7 @@ func TestApprovalAllowOnceClosesAndLogs(t *testing.T) {
 func TestApprovalClickClosesAndLogs(t *testing.T) {
 	m := testModel(t)
 	reply := make(chan harness.Decision, 1)
-	m.approval = &harness.ApprovalRequest{Tool: "write_file", Risk: "write", Summary: "x", Reply: reply}
+	m.approval = &harness.ApprovalRequest{Tool: "file_write", Risk: "write", Summary: "x", Reply: reply}
 	next, _ := m.activate(Target{Kind: KindApprove, Index: 1})
 	nm := next.(model)
 	if nm.approval != nil {
@@ -253,7 +253,7 @@ func TestApprovalClickClosesAndLogs(t *testing.T) {
 func TestApprovalEscDeniesAndLogs(t *testing.T) {
 	m := testModel(t)
 	reply := make(chan harness.Decision, 1)
-	m.approval = &harness.ApprovalRequest{Tool: "write_file", Risk: "write", Summary: "x", Reply: reply}
+	m.approval = &harness.ApprovalRequest{Tool: "file_write", Risk: "write", Summary: "x", Reply: reply}
 	next, _ := m.onKey(tea.KeyMsg{Type: tea.KeyEsc})
 	nm := next.(model)
 	if nm.approval != nil {
@@ -593,6 +593,12 @@ func TestModelHealthFromLLM(t *testing.T) {
 	_, row, ok = findPlainRow(nm.View(), "act")
 	if !ok || !strings.Contains(row, "err") {
 		t.Fatalf("llm error should set health err: %q", row)
+	}
+	if last := nm.lines[len(nm.lines)-1]; last.kind != "caution" {
+		t.Fatalf("provider error kind = %s", last.kind)
+	}
+	if !strings.Contains(stripANSI(nm.renderLine(nm.lines[len(nm.lines)-1], 40)), "CAUTION") {
+		t.Fatalf("missing caution render")
 	}
 	next, _ = nm.onEvent(loop.Event{Kind: loop.KindDone})
 	nm = next.(model)
@@ -1473,6 +1479,26 @@ func TestFormatToolCardShellCommand(t *testing.T) {
 	}
 }
 
+func TestToolCardWrapsLongCommand(t *testing.T) {
+	forceColor(t)
+	m := testModel(t)
+	cmd := strings.Repeat("abcdefghij ", 20)
+	m.lines = append(m.lines, line{kind: "tool", tool: "shell", text: fmt.Sprintf(`{"command":%q}`, cmd)})
+	got := m.renderLine(m.lines[len(m.lines)-1], m.width)
+	plain := stripANSI(got)
+	if strings.Contains(plain, "…") {
+		t.Fatalf("truncated: %q", plain)
+	}
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("expected wrap: %q", plain)
+	}
+	for i, ln := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(ln); w > m.width {
+			t.Fatalf("line %d width %d > %d: %q", i, w, m.width, ln)
+		}
+	}
+}
+
 func TestReplyMetaFooter(t *testing.T) {
 	m := testModel(t)
 	next, _ := m.onEvent(loop.Event{Kind: loop.KindText, Text: "hello there"})
@@ -1512,7 +1538,7 @@ func TestToolEndDiffNotTruncated(t *testing.T) {
 	if len(text) <= 240 {
 		t.Fatalf("fixture too short: %d", len(text))
 	}
-	next, _ := m.onEvent(loop.Event{Kind: loop.KindToolEnd, Tool: "edit_file", Text: text})
+	next, _ := m.onEvent(loop.Event{Kind: loop.KindToolEnd, Tool: "file_edit", Text: text})
 	m = next.(model)
 	last := m.lines[len(m.lines)-1]
 	if last.kind != "diff" {

@@ -17,10 +17,8 @@ func transcriptFromRecords(records []harness.Record) []line {
 		case "tool":
 			lines = append(lines, line{kind: "tool", tool: r.Tool, text: r.Args})
 			text := r.Result
-			kind := "ok"
-			if len(text) > 240 {
-				text = text[:240] + "…"
-			}
+			kind := toolResultKind(text, nil)
+			text = capToolDisplay(r.Tool, kind, text)
 			if text != "" {
 				lines = append(lines, line{kind: kind, tool: r.Tool, text: text})
 			}

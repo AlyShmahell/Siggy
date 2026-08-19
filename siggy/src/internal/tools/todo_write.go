@@ -11,9 +11,9 @@ import (
 )
 
 type todoItem struct {
-	ID     string `json:"id"`
+	ID      string `json:"id"`
 	Content string `json:"content"`
-	Status string `json:"status"`
+	Status  string `json:"status"`
 }
 
 type todoTool struct {

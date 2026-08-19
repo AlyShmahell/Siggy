@@ -34,27 +34,28 @@ func TestPruneKeepsMemoryReads(t *testing.T) {
 	if err := h.Session.Append(harness.Record{Type: "user", Text: "go"}); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 6; i++ {
 		call := fmt.Sprintf("c%d", i)
+		args := fmt.Sprintf(`{"path":"f%d.txt"}`, i)
 		if err := h.Session.Append(harness.Record{
-			Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: call, Name: "read_file", Args: `{"path":"a.txt"}`}},
+			Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: call, Name: "file_read", Args: args}},
 		}); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.Session.Append(harness.Record{
-			Type: "tool", Tool: "read_file", CallID: call, Args: `{"path":"a.txt"}`, Result: big,
+			Type: "tool", Tool: "file_read", CallID: call, Args: args, Result: big,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	memArgs := `{"path":"` + mem + `/MEMORY.md"}`
 	if err := h.Session.Append(harness.Record{
-		Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: "mem", Name: "read_file", Args: memArgs}},
+		Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: "mem", Name: "file_read", Args: memArgs}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Session.Append(harness.Record{
-		Type: "tool", Tool: "read_file", CallID: "mem", Args: memArgs, Result: big + " memory-unique",
+		Type: "tool", Tool: "file_read", CallID: "mem", Args: memArgs, Result: big + " memory-unique",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +83,162 @@ func TestPruneKeepsMemoryReads(t *testing.T) {
 	joined := joinContents(msgs)
 	if !strings.Contains(joined, "memory-unique") {
 		t.Fatalf("memory read missing from surface: %s", joined)
+	}
+	full := 0
+	for _, m := range msgs {
+		if m.Role == llm.RoleTool && strings.Contains(m.Content, big) && !strings.Contains(m.Content, pruneCleared) && !strings.Contains(m.Content, "memory-unique") {
+			full++
+		}
+	}
+	if full != keepFileResults {
+		t.Fatalf("kept full file_read results = %d want %d", full, keepFileResults)
+	}
+}
+
+func TestPruneSupersedesSamePath(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	h, err := harness.New(root, home, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Session.Close()
+	big := strings.Repeat("tool-output ", 40)
+	if err := h.Session.Append(harness.Record{Type: "user", Text: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		call := fmt.Sprintf("c%d", i)
+		if err := h.Session.Append(harness.Record{
+			Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: call, Name: "file_read", Args: `{"path":"a.txt"}`}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Session.Append(harness.Record{
+			Type: "tool", Tool: "file_read", CallID: call, Args: `{"path":"a.txt"}`, Result: big + fmt.Sprintf(" v%d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Session.Append(harness.Record{Type: "assistant", Text: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	eng := New(&llm.Scripted{}, tools.Builtins(h, nil), h, "")
+	eng.pruneToolResults()
+	msgs := DeriveMessages(h.Session.Records())
+	var full, stubbed int
+	for _, m := range msgs {
+		if m.Role != llm.RoleTool {
+			continue
+		}
+		if strings.Contains(m.Content, pruneCleared) {
+			stubbed++
+			continue
+		}
+		if strings.Contains(m.Content, big) {
+			full++
+			if !strings.Contains(m.Content, "v2") {
+				t.Fatalf("kept stale read: %q", m.Content)
+			}
+		}
+	}
+	if stubbed != 2 || full != 1 {
+		t.Fatalf("stubbed=%d full=%d", stubbed, full)
+	}
+}
+
+func TestPruneDumpKeepFiveWithStub(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	h, err := harness.New(root, home, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Session.Close()
+	dump := strings.Repeat("search-hit ", 40) + " https://example.com/a"
+	if err := h.Session.Append(harness.Record{Type: "user", Text: "find"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		call := fmt.Sprintf("s%d", i)
+		if err := h.Session.Append(harness.Record{
+			Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: call, Name: "web_search", Args: fmt.Sprintf(`{"query":"q%d"}`, i)}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Session.Append(harness.Record{
+			Type: "tool", Tool: "web_search", CallID: call, Args: fmt.Sprintf(`{"query":"q%d"}`, i), Result: dump,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Session.Append(harness.Record{Type: "assistant", Text: "use https://example.com/a"}); err != nil {
+		t.Fatal(err)
+	}
+	eng := New(&llm.Scripted{}, tools.Builtins(h, nil), h, "")
+	eng.applyPrune()
+	msgs := eng.Messages
+	derived := DeriveMessages(h.Session.Records())
+	if joinContents(msgs) != joinContents(derived) {
+		t.Fatal("Messages not rebuilt from derived surface")
+	}
+	var full, stubbed int
+	for _, m := range derived {
+		if m.Role != llm.RoleTool {
+			continue
+		}
+		if strings.Contains(m.Content, pruneCleared) {
+			stubbed++
+			if !strings.Contains(m.Content, "query=q") {
+				t.Fatalf("stub missing args: %q", m.Content)
+			}
+			if !strings.Contains(m.Content, "https://example.com/a") {
+				t.Fatalf("stub missing link: %q", m.Content)
+			}
+			if strings.Count(m.Content, "search-hit") > 5 && !strings.Contains(m.Content, pruneCleared) {
+				t.Fatalf("full dump in stub: %q", m.Content)
+			}
+			continue
+		}
+		if strings.Contains(m.Content, dump) {
+			full++
+		}
+	}
+	if stubbed != 1 || full != keepDumpResults {
+		t.Fatalf("stubbed=%d full=%d", stubbed, full)
+	}
+}
+
+func TestPruneSkipsUntilAssistantSpeaks(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	h, err := harness.New(root, home, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Session.Close()
+	dump := strings.Repeat("tool-output ", 40)
+	if err := h.Session.Append(harness.Record{Type: "user", Text: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Session.Append(harness.Record{
+		Type: "assistant", ToolCalls: []harness.ToolCallRec{{ID: "c1", Name: "web_fetch", Args: `{"url":"https://x"}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if err := h.Session.Append(harness.Record{
+			Type: "tool", Tool: "web_fetch", CallID: fmt.Sprintf("c%d", i), Args: `{"url":"https://x"}`, Result: dump,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eng := New(&llm.Scripted{}, tools.Builtins(h, nil), h, "")
+	eng.pruneToolResults()
+	for _, r := range h.Session.Records() {
+		if r.Type == "prune" {
+			t.Fatalf("pruned before assistant follow-up: %#v", r)
+		}
 	}
 }
 

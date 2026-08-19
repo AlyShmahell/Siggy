@@ -3,10 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"siggy/src/internal/harness"
+	"siggy/src/internal/tools/utils"
 )
 
 type writeTool struct {
@@ -15,7 +18,7 @@ type writeTool struct {
 
 func NewWrite(h *harness.Harness) Tool { return &writeTool{h: h} }
 
-func (t *writeTool) Name() string { return "write_file" }
+func (t *writeTool) Name() string { return "file_write" }
 func (t *writeTool) Description() string {
 	return "Create or overwrite a text file in the workspace."
 }
@@ -39,7 +42,7 @@ func (t *writeTool) Run(_ context.Context, raw json.RawMessage) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	snapshotFile(t.h, args.Path, path)
+	utils.SnapshotFile(t.h, args.Path, path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
@@ -47,4 +50,16 @@ func (t *writeTool) Run(_ context.Context, raw json.RawMessage) (string, error) 
 		return "", err
 	}
 	return formatWriteHunk(t.h.Workspace.Rel(path), args.Content), nil
+}
+
+func formatWriteHunk(rel, content string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "wrote %s\n", rel)
+	if content == "" {
+		return strings.TrimRight(b.String(), "\n")
+	}
+	for i, ln := range strings.Split(content, "\n") {
+		fmt.Fprintf(&b, "+ %4d | %s\n", i+1, ln)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

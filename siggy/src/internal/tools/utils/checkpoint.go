@@ -1,4 +1,4 @@
-package tools
+package utils
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"siggy/src/internal/harness"
 )
 
-func snapshotFile(h *harness.Harness, rel, abs string) {
+func SnapshotFile(h *harness.Harness, rel, abs string) {
 	if h == nil || h.Session == nil {
 		return
 	}

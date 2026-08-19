@@ -36,6 +36,18 @@ clipboard_run_args() {
     args+=(-e "XAUTHORITY=/tmp/xauthority")
     args+=(-v "$XAUTHORITY:/tmp/xauthority:ro")
   fi
+  if [[ -n "${TERM:-}" ]]; then
+    args+=(-e "TERM=$TERM")
+  fi
+  if [[ -n "${KITTY_WINDOW_ID:-}" ]]; then
+    args+=(-e "KITTY_WINDOW_ID=$KITTY_WINDOW_ID")
+  fi
+  if [[ -n "${COLORTERM:-}" ]]; then
+    args+=(-e "COLORTERM=$COLORTERM")
+  fi
+  if [[ -n "${SIGGY_KITTY_IMAGES:-}" ]]; then
+    args+=(-e "SIGGY_KITTY_IMAGES=$SIGGY_KITTY_IMAGES")
+  fi
   if ((${#args[@]} > 0)); then
     printf '%s\n' "${args[@]}"
   fi

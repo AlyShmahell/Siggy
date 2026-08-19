@@ -14,7 +14,7 @@ func TestHTTPStreamTextAndTools(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi \"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"there\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"file_read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -31,7 +31,7 @@ func TestHTTPStreamTextAndTools(t *testing.T) {
 	if text != "hi there" {
 		t.Fatalf("text = %q", text)
 	}
-	if len(calls) != 1 || calls[0].Name != "read_file" {
+	if len(calls) != 1 || calls[0].Name != "file_read" {
 		t.Fatalf("calls = %#v", calls)
 	}
 	var args map[string]string
@@ -44,7 +44,7 @@ func TestHTTPStreamToolCallIndex(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"glob\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"dir_list\",\"arguments\":\"{}\"}}]}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"pattern\\\":\\\"**/*.go\\\"}\"}}]}}],\"finish_reason\":\"tool_calls\"}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -62,7 +62,7 @@ func TestHTTPStreamToolCallIndex(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %#v", calls)
 	}
-	if calls[0].Name != "glob" || calls[1].Name != "list_dir" {
+	if calls[0].Name != "glob" || calls[1].Name != "dir_list" {
 		t.Fatalf("names = %s %s", calls[0].Name, calls[1].Name)
 	}
 	var args map[string]string

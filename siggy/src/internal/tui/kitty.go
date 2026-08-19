@@ -24,6 +24,7 @@ type imgSlot struct {
 	path        string
 	abs         string
 	contentLine int
+	col         int
 	cols        int
 	rows        int
 	live        bool
@@ -37,8 +38,11 @@ type imgCacheEntry struct {
 
 func kittyImagesEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("SIGGY_KITTY_IMAGES")))
-	if v != "1" && v != "true" && v != "yes" {
+	switch v {
+	case "0", "false", "no":
 		return false
+	case "1", "true", "yes":
+		return true
 	}
 	if os.Getenv("KITTY_WINDOW_ID") != "" {
 		return true
@@ -188,7 +192,7 @@ func (m *model) kittyOverlay() string {
 		if rows < 1 {
 			continue
 		}
-		x := tr.X + 1
+		x := tr.X + 1 + s.col
 		y := tr.Y + rel
 		cols := s.cols
 		if cols < 1 {

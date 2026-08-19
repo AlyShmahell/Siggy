@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -16,6 +18,7 @@ const (
 	mdHeading
 	mdList
 	mdQuote
+	mdCaution
 	mdBold
 	mdItalic
 	mdHR
@@ -81,6 +84,21 @@ func parseMarkdown(s string) []mdSeg {
 			flushProse()
 			out = append(out, mdSeg{kind: mdList, lang: marker, text: text})
 			i++
+			continue
+		}
+		if cautionOpen(lines[i]) {
+			flushProse()
+			i++
+			var body []string
+			for i < len(lines) {
+				text, ok := quoteLine(lines[i])
+				if !ok {
+					break
+				}
+				body = append(body, text)
+				i++
+			}
+			out = append(out, mdSeg{kind: mdCaution, text: strings.Join(body, "\n")})
 			continue
 		}
 		if text, ok := quoteLine(lines[i]); ok {
@@ -288,6 +306,55 @@ func listLine(line string) (marker, text string, ok bool) {
 	return "", "", false
 }
 
+func cautionOpen(line string) bool {
+	s := strings.TrimSpace(line)
+	if !strings.HasPrefix(s, ">") {
+		return false
+	}
+	s = strings.TrimSpace(strings.TrimPrefix(s, ">"))
+	return strings.EqualFold(s, "[!CAUTION]") || strings.EqualFold(s, "[!caution]")
+}
+
+func renderCaution(body string, inner int) string {
+	barW := max(inner-2, 8)
+	var lines []string
+	lines = append(lines, stErr.Render("│ CAUTION"))
+	for _, ln := range strings.Split(wrapVisual(body, barW), "\n") {
+		lines = append(lines, stErr.Render("│ "+ln))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatCautionMarkdown(err string) string {
+	title := "Error"
+	body := strings.TrimSpace(err)
+	const prefix = "llm http "
+	if strings.HasPrefix(err, prefix) {
+		rest := err[len(prefix):]
+		codeStr, msg, ok := strings.Cut(rest, ":")
+		if ok {
+			var code int
+			if _, scanErr := fmt.Sscanf(strings.TrimSpace(codeStr), "%d", &code); scanErr == nil && code > 0 {
+				title = fmt.Sprintf("HTTP %d", code)
+				if st := http.StatusText(code); st != "" {
+					title += " " + st
+				}
+				body = strings.TrimSpace(msg)
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString("> [!CAUTION]\n")
+	b.WriteString("> " + title + "\n")
+	if body == "" {
+		return b.String()
+	}
+	for _, ln := range strings.Split(body, "\n") {
+		b.WriteString("> " + ln + "\n")
+	}
+	return b.String()
+}
+
 func quoteLine(line string) (text string, ok bool) {
 	indent := leadingSpaces(line, 3)
 	if indent < 0 {
@@ -416,6 +483,14 @@ func expandEmphasis(segs []mdSeg) []mdSeg {
 func expandImages(segs []mdSeg) []mdSeg {
 	var out []mdSeg
 	for _, s := range segs {
+		if s.kind == mdInline {
+			if img, ok := exactLocalImage(s.text); ok {
+				out = append(out, img)
+				continue
+			}
+			out = append(out, s)
+			continue
+		}
 		if s.kind != mdProse {
 			out = append(out, s)
 			continue
@@ -423,6 +498,15 @@ func expandImages(segs []mdSeg) []mdSeg {
 		out = append(out, parseImages(s.text)...)
 	}
 	return out
+}
+
+func exactLocalImage(s string) (mdSeg, bool) {
+	s = strings.TrimSpace(s)
+	segs := parseImages(s)
+	if len(segs) != 1 || segs[0].kind != mdImage {
+		return mdSeg{}, false
+	}
+	return segs[0], true
 }
 
 func parseImages(s string) []mdSeg {
@@ -486,15 +570,12 @@ func remoteImagePath(p string) bool {
 	return strings.Contains(l, "://") || strings.HasPrefix(l, "data:")
 }
 
-func imageCaption(alt, path string) string {
+func imageAltFallback(alt string) string {
 	alt = strings.TrimSpace(alt)
-	if alt != "" {
-		return alt
-	}
-	if path == "" {
+	if alt == "" {
 		return "[image]"
 	}
-	return "[image: " + path + "]"
+	return alt
 }
 
 func parseEmphasis(s string) []mdSeg {
@@ -576,6 +657,7 @@ func renderRich(text string, inner int, asst bool) string {
 type richOpts struct {
 	graphics bool
 	live     bool
+	maxRows  int
 	resolve  func(string) (string, bool)
 }
 
@@ -633,21 +715,37 @@ func renderRichOpts(text string, inner int, asst bool, opts richOpts) (string, [
 		case mdQuote:
 			flush()
 			paint(stQuote.Render("│ " + inline(s.text)))
+		case mdCaution:
+			flush()
+			add(renderCaution(s.text, inner))
 		case mdHR:
 			flush()
 			paint(stMuted.Render(strings.Repeat("─", max(inner, 1))))
 		case mdTable:
 			flush()
-			paint(renderTable(s, inner, inline))
+			body, tslots := renderTable(s, inner, opts)
+			for i := range tslots {
+				tslots[i].contentLine += used
+			}
+			paint(body)
+			slots = append(slots, tslots...)
 		case mdImage:
 			flush()
 			body, slot := formatImageBlock(s, inner, opts)
-			start := used
-			paint(body)
-			if slot != nil {
-				slot.contentLine = start + 1
-				slots = append(slots, *slot)
+			if body == "" {
+				break
 			}
+			if slot != nil || strings.Contains(body, "▀") {
+				if slot != nil {
+					slot.contentLine = used
+				}
+				add(body)
+				if slot != nil {
+					slots = append(slots, *slot)
+				}
+				break
+			}
+			paint(stMuted.Render(body))
 		default:
 			run = append(run, s)
 		}
@@ -661,40 +759,179 @@ func renderRichOpts(text string, inner int, asst bool, opts richOpts) (string, [
 }
 
 func formatImageBlock(s mdSeg, inner int, opts richOpts) (string, *imgSlot) {
-	cap := imageCaption(s.text, s.lang)
+	fallback := imageAltFallback(s.text)
 	abs, ok := "", false
 	if opts.resolve != nil {
 		abs, ok = opts.resolve(s.lang)
 	}
-	if !opts.graphics || !ok {
-		return cap, nil
+	if !ok {
+		return fallback, nil
 	}
-	cols := max(inner, 8)
-	var b strings.Builder
-	b.WriteString(cap)
-	for i := 0; i < imgReserveRows; i++ {
-		b.WriteByte('\n')
-		b.WriteByte(' ')
+	if opts.live {
+		if !opts.graphics {
+			return "", nil
+		}
+		rows := opts.maxRows
+		if rows < 1 {
+			rows = 40
+		}
+		var b strings.Builder
+		for i := 0; i < rows; i++ {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteByte(' ')
+		}
+		return b.String(), &imgSlot{
+			path: s.lang,
+			abs:  abs,
+			cols: max(inner, 8),
+			rows: rows,
+			live: true,
+		}
 	}
-	return b.String(), &imgSlot{
+	cols := inner
+	if cols < 1 {
+		cols = 1
+	}
+	maxRows := opts.maxRows
+	if maxRows < 1 {
+		maxRows = 40
+	}
+	preview, outCols, outRows := imagePreview(abs, cols, maxRows)
+	if preview == "" {
+		return fallback, nil
+	}
+	if !opts.graphics {
+		return preview, nil
+	}
+	return preview, &imgSlot{
 		path: s.lang,
 		abs:  abs,
-		cols: cols,
-		rows: imgReserveRows,
-		live: opts.live,
+		cols: max(outCols, 1),
+		rows: max(outRows, 1),
+		live: false,
 	}
 }
 
-func renderTable(s mdSeg, inner int, inline func(string) string) string {
+func cellImageOnly(cell string) (mdSeg, bool) {
+	segs := expandImages(expandEmphasis(parseInline(strings.TrimSpace(cell))))
+	if len(segs) != 1 || segs[0].kind != mdImage {
+		return mdSeg{}, false
+	}
+	return segs[0], true
+}
+
+func tableColStarts(widths []int) []int {
+	starts := make([]int, len(widths))
+	x := 0
+	for i, w := range widths {
+		starts[i] = x
+		x += w
+		if i+1 < len(widths) {
+			x += 3
+		}
+	}
+	return starts
+}
+
+func fitTableWidths(widths []int, imageCol []bool, inner int) {
+	cols := len(widths)
+	seps := 0
+	if cols > 1 {
+		seps = 3 * (cols - 1)
+	}
+	nImg := 0
+	textSum := 0
+	for i, w := range widths {
+		if imageCol[i] {
+			nImg++
+		} else {
+			textSum += w
+		}
+	}
+	if nImg == 0 {
+		total := textSum + seps
+		for total > inner && inner > 0 {
+			k := 0
+			for i := 1; i < cols; i++ {
+				if widths[i] > widths[k] {
+					k = i
+				}
+			}
+			if widths[k] <= 1 {
+				break
+			}
+			widths[k]--
+			total--
+		}
+		return
+	}
+	remain := inner - seps - textSum
+	need := nImg * 8
+	for remain < need {
+		k := -1
+		for i := 0; i < cols; i++ {
+			if imageCol[i] || widths[i] <= 1 {
+				continue
+			}
+			if k < 0 || widths[i] > widths[k] {
+				k = i
+			}
+		}
+		if k < 0 {
+			break
+		}
+		widths[k]--
+		remain++
+	}
+	if remain < nImg {
+		remain = nImg
+	}
+	base := remain / nImg
+	extra := remain % nImg
+	for i := range widths {
+		if !imageCol[i] {
+			continue
+		}
+		w := base
+		if extra > 0 {
+			w++
+			extra--
+		}
+		if w < 1 {
+			w = 1
+		}
+		widths[i] = w
+	}
+}
+
+func renderTable(s mdSeg, inner int, opts richOpts) (string, []imgSlot) {
 	rows := decodeTable(s.text)
 	if len(rows) == 0 {
-		return ""
+		return "", nil
 	}
 	cols := len(rows[0])
-	widths := make([]int, cols)
-	for _, row := range rows {
+	imageCol := make([]bool, cols)
+	for _, row := range rows[1:] {
 		for i := 0; i < cols && i < len(row); i++ {
-			w := lipgloss.Width(stripANSI(inline(row[i])))
+			if _, ok := cellImageOnly(row[i]); ok {
+				imageCol[i] = true
+			}
+		}
+	}
+	inlineCell := func(text string) string {
+		return renderInlineWrap(expandLatex(expandImages(expandEmphasis(parseInline(text)))), inner)
+	}
+	widths := make([]int, cols)
+	for ri, row := range rows {
+		for i := 0; i < cols && i < len(row); i++ {
+			if ri > 0 {
+				if _, ok := cellImageOnly(row[i]); ok {
+					continue
+				}
+			}
+			w := lipgloss.Width(stripANSI(firstLine(inlineCell(row[i]))))
 			if w > widths[i] {
 				widths[i] = w
 			}
@@ -705,58 +942,82 @@ func renderTable(s mdSeg, inner int, inline func(string) string) string {
 			widths[i] = 1
 		}
 	}
-	sepW := 3
-	total := 0
-	for _, w := range widths {
-		total += w
-	}
-	if cols > 1 {
-		total += sepW * (cols - 1)
-	}
-	for total > inner && inner > 0 {
-		k := 0
-		for i := 1; i < cols; i++ {
-			if widths[i] > widths[k] {
-				k = i
-			}
-		}
-		if widths[k] <= 1 {
-			break
-		}
-		widths[k]--
-		total--
-	}
+	fitTableWidths(widths, imageCol, inner)
+	starts := tableColStarts(widths)
+	sep := stMuted.Render(" │ ")
+	var slots []imgSlot
 	var b strings.Builder
-	writeRow := func(row []string, head bool) {
-		for i := 0; i < cols; i++ {
-			if i > 0 {
-				b.WriteString(stMuted.Render(" │ "))
+	writeCells := func(cells [][]string) {
+		h := 1
+		for _, c := range cells {
+			if len(c) > h {
+				h = len(c)
 			}
+		}
+		for y := 0; y < h; y++ {
+			if y > 0 {
+				b.WriteByte('\n')
+			}
+			for i := 0; i < cols; i++ {
+				if i > 0 {
+					b.WriteString(sep)
+				}
+				line := ""
+				if y < len(cells[i]) {
+					line = cells[i][y]
+				}
+				b.WriteString(padVisual(line, widths[i]))
+			}
+		}
+	}
+	head := make([][]string, cols)
+	for i := 0; i < cols; i++ {
+		cell := ""
+		if i < len(rows[0]) {
+			cell = rows[0][i]
+		}
+		body := stHeading.Render(stripANSI(firstLine(inlineCell(cell))))
+		head[i] = []string{body}
+	}
+	writeCells(head)
+	b.WriteByte('\n')
+	parts := make([]string, cols)
+	for i, w := range widths {
+		parts[i] = strings.Repeat("─", w)
+	}
+	b.WriteString(stMuted.Render(strings.Join(parts, "─┼─")))
+	for _, row := range rows[1:] {
+		b.WriteByte('\n')
+		rowStart := strings.Count(b.String(), "\n")
+		cells := make([][]string, cols)
+		for i := 0; i < cols; i++ {
 			cell := ""
 			if i < len(row) {
 				cell = row[i]
 			}
-			body := firstLine(renderInlineWrap(expandLatex(expandEmphasis(parseInline(cell))), widths[i]))
-			if head {
-				body = stHeading.Render(stripANSI(body))
+			if img, ok := cellImageOnly(cell); ok {
+				body, slot := formatImageBlock(img, widths[i], opts)
+				if slot != nil {
+					slot.col = starts[i]
+					slot.contentLine = rowStart
+					slots = append(slots, *slot)
+				}
+				if body == "" {
+					cells[i] = []string{""}
+					continue
+				}
+				if slot == nil && !strings.Contains(body, "▀") {
+					cells[i] = []string{stMuted.Render(firstLine(body))}
+					continue
+				}
+				cells[i] = strings.Split(body, "\n")
+				continue
 			}
-			b.WriteString(padVisual(body, widths[i]))
+			cells[i] = []string{firstLine(inlineCell(cell))}
 		}
+		writeCells(cells)
 	}
-	if len(rows) > 0 {
-		writeRow(rows[0], true)
-		b.WriteByte('\n')
-		parts := make([]string, cols)
-		for i, w := range widths {
-			parts[i] = strings.Repeat("─", w)
-		}
-		b.WriteString(stMuted.Render(strings.Join(parts, "─┼─")))
-		for _, row := range rows[1:] {
-			b.WriteByte('\n')
-			writeRow(row, false)
-		}
-	}
-	return b.String()
+	return b.String(), slots
 }
 
 func firstLine(s string) string {
@@ -872,7 +1133,7 @@ func renderInlineWrap(segs []mdSeg, inner int) string {
 			continue
 		}
 		if s.kind == mdImage {
-			writeAtomic(imageCaption(s.text, s.lang), &stMuted)
+			writeAtomic(imageAltFallback(s.text), &stMuted)
 			continue
 		}
 		switch s.kind {

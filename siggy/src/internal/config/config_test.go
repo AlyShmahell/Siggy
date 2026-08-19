@@ -148,6 +148,31 @@ func TestResolveWorkspaceFileUsesParent(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresMissingTomlWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SIGGY_HOME", home)
+	t.Setenv("SIGGY_WORKSPACE", "")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	stale := filepath.Join(home, "stale-workspace")
+	body := []byte(fmt.Sprintf("workspace = %q\n", stale))
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace != want {
+		t.Fatalf("missing toml workspace = %q want cwd %q", cfg.Workspace, want)
+	}
+}
+
 func TestOverrideWorkspaceArgBeatsToml(t *testing.T) {
 	home := t.TempDir()
 	tomlWS := t.TempDir()

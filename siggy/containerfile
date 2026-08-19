@@ -19,7 +19,7 @@ RUN go build -trimpath \
       -o /out/siggy ./src/cmd/siggy
 
 FROM docker.io/library/alpine:3.21 AS pack
-RUN apk add --no-cache tar coreutils
+RUN apk add --no-cache tar coreutils librsvg
 COPY VERSION /tmp/VERSION
 COPY install.sh /tmp/install.sh
 COPY siggy/prompts /tmp/prompts
@@ -37,11 +37,15 @@ RUN VERSION="$(tr -d '[:space:]' < /tmp/VERSION)" \
       cp /tmp/install.sh "/stage/${name}/install.sh"; \
       chmod +x "/stage/${name}/install.sh"; \
       if [ "$goos" = linux ]; then \
+        svg=/tmp/share/icons/hicolor/scalable/apps/siggy.svg; \
         mkdir -p "/stage/${name}/share/applications" \
-          "/stage/${name}/share/icons/hicolor/scalable/apps"; \
+          "/stage/${name}/share/icons/hicolor/scalable/apps" \
+          "/stage/${name}/share/icons/hicolor/48x48/apps" \
+          "/stage/${name}/share/icons/hicolor/128x128/apps"; \
         cp /tmp/share/applications/siggy.desktop "/stage/${name}/share/applications/"; \
-        cp /tmp/share/icons/hicolor/scalable/apps/siggy.svg \
-          "/stage/${name}/share/icons/hicolor/scalable/apps/"; \
+        cp "$svg" "/stage/${name}/share/icons/hicolor/scalable/apps/"; \
+        rsvg-convert -w 48 -h 48 -o "/stage/${name}/share/icons/hicolor/48x48/apps/siggy.png" "$svg"; \
+        rsvg-convert -w 128 -h 128 -o "/stage/${name}/share/icons/hicolor/128x128/apps/siggy.png" "$svg"; \
       fi; \
       mkdir -p /dist; \
       tar -C /stage -czf "/dist/${name}.tar.gz" "$name"; \

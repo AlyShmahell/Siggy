@@ -69,10 +69,19 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("create siggy home: %w", err)
 	}
 
+	cwd := mustAbs(".")
 	cfg := &Config{
 		Home:      home,
-		Workspace: firstNonEmpty(os.Getenv("SIGGY_WORKSPACE"), mustAbs(".")),
+		Workspace: cwd,
 		Mode:      "act",
+	}
+
+	if env := strings.TrimSpace(os.Getenv("SIGGY_WORKSPACE")); env != "" {
+		ws, err := ResolveWorkspace(env)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Workspace = ws
 	}
 
 	path := ConfigPath(home)
@@ -83,7 +92,9 @@ func Load() (*Config, error) {
 		}
 		cfg.MCP = file.MCP
 		if file.Workspace != "" && os.Getenv("SIGGY_WORKSPACE") == "" {
-			cfg.Workspace = file.Workspace
+			if st, err := os.Stat(file.Workspace); err == nil && st.IsDir() {
+				cfg.Workspace = file.Workspace
+			}
 		}
 		cfg.Providers = file.Providers
 		cfg.ActiveProvider = file.ActiveProvider

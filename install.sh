@@ -54,7 +54,10 @@ rewrite_desktop() {
 	local src="$1"
 	local dest="$2"
 	local exec_path="$3"
-	sed "s|^Exec=.*|Exec=${exec_path} %F|" "$src" >"$dest"
+	local icon_path="$4"
+	sed -e "s|^Exec=.*|Exec=${exec_path} %F|" \
+		-e "s|^Icon=.*|Icon=${icon_path}|" \
+		"$src" >"$dest"
 }
 
 warn_deps() {
@@ -78,13 +81,27 @@ install_from_dir() {
 	install -m 755 "$src/bin/siggy" "$BIN"
 	cp -R "$src/share/prompts/." "$SHARE/prompts/"
 	if [[ "$(uname -s)" == "Linux" && -f "$src/share/applications/siggy.desktop" ]]; then
-		mkdir -p "$PREFIX/share/applications" "$PREFIX/share/icons/hicolor/scalable/apps"
-		rewrite_desktop "$src/share/applications/siggy.desktop" "$PREFIX/share/applications/siggy.desktop" "$BIN"
-		if [[ -f "$src/share/icons/hicolor/scalable/apps/siggy.svg" ]]; then
-			cp "$src/share/icons/hicolor/scalable/apps/siggy.svg" "$PREFIX/share/icons/hicolor/scalable/apps/siggy.svg"
+		local icon="$PREFIX/share/icons/hicolor/scalable/apps/siggy.svg"
+		mkdir -p "$PREFIX/share/applications"
+		if [[ -d "$src/share/icons/hicolor" ]]; then
+			while IFS= read -r rel; do
+				mkdir -p "$PREFIX/share/icons/$(dirname "$rel")"
+				cp "$src/share/icons/$rel" "$PREFIX/share/icons/$rel"
+			done < <(cd "$src/share/icons" && find hicolor \( -name siggy.svg -o -name siggy.png \) )
+		fi
+		if [[ -f "$icon" ]]; then
+			rewrite_desktop "$src/share/applications/siggy.desktop" "$PREFIX/share/applications/siggy.desktop" "$BIN" "$icon"
+		else
+			rewrite_desktop "$src/share/applications/siggy.desktop" "$PREFIX/share/applications/siggy.desktop" "$BIN" "siggy"
 		fi
 		if command -v update-desktop-database >/dev/null 2>&1; then
 			update-desktop-database "$PREFIX/share/applications" >/dev/null 2>&1 || true
+		fi
+		if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+			gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true
+		fi
+		if command -v xdg-desktop-menu >/dev/null 2>&1; then
+			xdg-desktop-menu forceupdate >/dev/null 2>&1 || true
 		fi
 	fi
 	warn_deps

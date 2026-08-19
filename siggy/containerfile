@@ -1,20 +1,60 @@
-FROM docker.io/library/golang:1.25-bookworm AS build
+FROM docker.io/library/golang:1.25-bookworm AS goctx
 
 ENV CGO_ENABLED=0
 WORKDIR /src
 COPY VERSION ./VERSION
 COPY siggy/go.mod siggy/go.sum ./
 COPY siggy/src ./src
-RUN go mod download \
-    && go build -trimpath \
-       -ldflags="-s -w -X siggy/src/internal/version.Value=$(tr -d '[:space:]' < VERSION)" \
-       -o /out/siggy ./src/cmd/siggy
+RUN go mod download
+
+FROM goctx AS linux
+RUN go build -trimpath \
+      -ldflags="-s -w -X siggy/src/internal/version.Value=$(tr -d '[:space:]' < VERSION)" \
+      -o /out/siggy ./src/cmd/siggy
+
+FROM goctx AS darwin
+ENV GOOS=darwin GOARCH=arm64
+RUN go build -trimpath \
+      -ldflags="-s -w -X siggy/src/internal/version.Value=$(tr -d '[:space:]' < VERSION)" \
+      -o /out/siggy ./src/cmd/siggy
+
+FROM docker.io/library/alpine:3.21 AS pack
+RUN apk add --no-cache tar coreutils
+COPY VERSION /tmp/VERSION
+COPY install.sh /tmp/install.sh
+COPY siggy/prompts /tmp/prompts
+COPY siggy/share /tmp/share
+COPY --from=linux /out/siggy /tmp/linux/siggy
+COPY --from=darwin /out/siggy /tmp/darwin/siggy
+RUN VERSION="$(tr -d '[:space:]' < /tmp/VERSION)" \
+ && pack() { \
+      goos="$1"; arch="$2"; bin="$3"; \
+      name="siggy-${VERSION}-${goos}-${arch}"; \
+      mkdir -p "/stage/${name}/bin" "/stage/${name}/share/prompts"; \
+      cp "$bin" "/stage/${name}/bin/siggy"; \
+      chmod +x "/stage/${name}/bin/siggy"; \
+      cp -a /tmp/prompts/. "/stage/${name}/share/prompts/"; \
+      cp /tmp/install.sh "/stage/${name}/install.sh"; \
+      chmod +x "/stage/${name}/install.sh"; \
+      if [ "$goos" = linux ]; then \
+        mkdir -p "/stage/${name}/share/applications" \
+          "/stage/${name}/share/icons/hicolor/scalable/apps"; \
+        cp /tmp/share/applications/siggy.desktop "/stage/${name}/share/applications/"; \
+        cp /tmp/share/icons/hicolor/scalable/apps/siggy.svg \
+          "/stage/${name}/share/icons/hicolor/scalable/apps/"; \
+      fi; \
+      mkdir -p /dist; \
+      tar -C /stage -czf "/dist/${name}.tar.gz" "$name"; \
+      (cd /dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"); \
+    } \
+ && pack linux amd64 /tmp/linux/siggy \
+ && pack darwin arm64 /tmp/darwin/siggy
 
 FROM docker.io/library/alpine:3.21
 RUN apk add --no-cache ca-certificates git ripgrep bash xclip wl-clipboard poppler-utils \
     && adduser -D -u 1000 -s /bin/bash siggy
 
-COPY --from=build /out/siggy /usr/local/bin/siggy
+COPY --from=linux /out/siggy /usr/local/bin/siggy
 COPY siggy/prompts /usr/share/siggy/prompts
 USER siggy
 WORKDIR /workspace

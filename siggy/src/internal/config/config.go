@@ -127,6 +127,44 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+func ResolveWorkspace(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("workspace path is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("workspace: %w", err)
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("workspace: %w", err)
+	}
+	if st.IsDir() {
+		return abs, nil
+	}
+	return filepath.Dir(abs), nil
+}
+
+func OverrideWorkspace(cfg *Config, cli string) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if os.Getenv("SIGGY_WORKSPACE") != "" {
+		return nil
+	}
+	cli = strings.TrimSpace(cli)
+	if cli == "" {
+		return nil
+	}
+	ws, err := ResolveWorkspace(cli)
+	if err != nil {
+		return err
+	}
+	cfg.Workspace = ws
+	return nil
+}
+
 func envProvider(file File) Provider {
 	url := firstNonEmpty(os.Getenv("OPENAI_BASE_URL"), file.BaseURL, "https://api.openai.com/v1")
 	key := firstNonEmpty(os.Getenv("OPENAI_API_KEY"), file.APIKey)

@@ -14,12 +14,25 @@ import (
 
 const shareDir = "/usr/share/siggy/prompts"
 
+func userShareDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "siggy", "prompts")
+}
+
 func DefaultSource() string {
 	if p := os.Getenv("SIGGY_PROMPTS"); p != "" {
 		return p
 	}
-	if st, err := os.Stat(shareDir); err == nil && st.IsDir() {
-		return shareDir
+	for _, dir := range []string{userShareDir(), shareDir} {
+		if dir == "" {
+			continue
+		}
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir
+		}
 	}
 	return ""
 }

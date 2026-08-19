@@ -46,6 +46,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cliWS := ""
+	if rest := flag.Args(); len(rest) > 0 {
+		cliWS = rest[0]
+	}
+	if err := config.OverrideWorkspace(cfg, cliWS); err != nil {
+		return err
+	}
 	cfg.AutoApprove = *yes
 	if *plan {
 		cfg.Mode = string(harness.ModePlan)

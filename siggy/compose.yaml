@@ -4,29 +4,4 @@ services:
     build:
       context: ..
       dockerfile: siggy/containerfile
-    stdin_open: true
-    tty: true
-    working_dir: /workspace
-    userns_mode: keep-id
-    network_mode: host
-    security_opt:
-      - label=disable
-    volumes:
-      - ${SIGGY_WORKSPACE:-..}:/workspace:Z
-      - ${SIGGY_HOME:-${HOME}/.siggy}:/home/siggy/.siggy:Z
-      - /tmp/.X11-unix:/tmp/.X11-unix:ro
-    environment:
-      HOME: /home/siggy
-      SIGGY_HOME: /home/siggy/.siggy
-      DISPLAY: ${DISPLAY:-}
-      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-}
-      XDG_RUNTIME_DIR: /tmp
-      XAUTHORITY: ${XAUTHORITY:-}
-      TERM: ${TERM:-}
-      KITTY_WINDOW_ID: ${KITTY_WINDOW_ID:-}
-      COLORTERM: ${COLORTERM:-}
-      SIGGY_KITTY_IMAGES: ${SIGGY_KITTY_IMAGES:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
-    command: []
+      target: ${SIGGY_TARGET:-pack}

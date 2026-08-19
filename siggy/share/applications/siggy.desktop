@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Siggy
+Comment=Local coding agent
+Exec=siggy %F
+Icon=siggy
+Terminal=true
+Categories=Development;
+MimeType=inode/directory;
+StartupNotify=false

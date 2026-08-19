@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -122,6 +123,80 @@ func TestLoadEnvOverridesModel(t *testing.T) {
 	}
 	if cfg.Model != "from-env" {
 		t.Fatalf("env should win, got %q", cfg.Model)
+	}
+}
+
+func TestResolveWorkspaceFileUsesParent(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveWorkspace(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Fatalf("file workspace = %q want %q", got, root)
+	}
+	got, err = ResolveWorkspace(root)
+	if err != nil || got != root {
+		t.Fatalf("dir workspace = %q %v", got, err)
+	}
+	if _, err := ResolveWorkspace(filepath.Join(root, "missing")); err == nil {
+		t.Fatal("expected missing path error")
+	}
+}
+
+func TestOverrideWorkspaceArgBeatsToml(t *testing.T) {
+	home := t.TempDir()
+	tomlWS := t.TempDir()
+	cliWS := t.TempDir()
+	t.Setenv("SIGGY_HOME", home)
+	t.Setenv("SIGGY_WORKSPACE", "")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	body := []byte(fmt.Sprintf("workspace = %q\n", tomlWS))
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace != tomlWS {
+		t.Fatalf("toml workspace = %q", cfg.Workspace)
+	}
+	if err := OverrideWorkspace(cfg, cliWS); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace != cliWS {
+		t.Fatalf("cli should win, got %q", cfg.Workspace)
+	}
+}
+
+func TestOverrideWorkspaceEnvBeatsArg(t *testing.T) {
+	home := t.TempDir()
+	envWS := t.TempDir()
+	cliWS := t.TempDir()
+	t.Setenv("SIGGY_HOME", home)
+	t.Setenv("SIGGY_WORKSPACE", envWS)
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace != envWS {
+		t.Fatalf("env workspace = %q", cfg.Workspace)
+	}
+	if err := OverrideWorkspace(cfg, cliWS); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace != envWS {
+		t.Fatalf("env should keep, got %q", cfg.Workspace)
 	}
 }
 

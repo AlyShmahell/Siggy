@@ -116,3 +116,20 @@ func TestSystemClearedLineWithoutTemplate(t *testing.T) {
 		t.Fatalf("cleared-tools line should come from system.md, not Go: %q", got)
 	}
 }
+
+func TestDefaultSourcePrefersUserLocal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SIGGY_PROMPTS", "")
+	user := filepath.Join(home, ".local", "share", "siggy", "prompts")
+	if err := os.MkdirAll(user, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultSource(); got != user {
+		t.Fatalf("DefaultSource = %q want %q", got, user)
+	}
+	t.Setenv("SIGGY_PROMPTS", "/from/env")
+	if got := DefaultSource(); got != "/from/env" {
+		t.Fatalf("env should win, got %q", got)
+	}
+}

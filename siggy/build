@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../toolchains/menu.sh
+source "$ROOT/toolchains/menu.sh"
+
+export SIGGY_WORKSPACE="${SIGGY_WORKSPACE:-$ROOT/workspace}"
+export SIGGY_HOME="${SIGGY_HOME:-$HOME/.siggy}"
+export SIGGY_PROMPTS="${SIGGY_PROMPTS:-$ROOT/siggy/prompts}"
+mkdir -p "$SIGGY_HOME"
+
+compose() {
+  (cd "$ROOT/siggy" && podman compose -f compose.yaml "$@")
+}
+
+ensure_images() {
+  (cd "$ROOT/toolchains" && podman compose -f compose.yaml pull)
+}
+
+copy_from() {
+  local image="$1"
+  local src="$2"
+  local dest="$3"
+  local cid
+  cid="$(podman create "$image")"
+  podman cp "$cid:$src" "$dest"
+  podman rm "$cid" >/dev/null
+}
+
+cmd_run() {
+  ensure_images
+  mkdir -p "$ROOT/dist"
+  case "$(uname -s)" in
+  Linux) SIGGY_TARGET=linux ;;
+  Darwin) SIGGY_TARGET=darwin ;;
+  *)
+    printf 'unsupported host OS: %s\n' "$(uname -s)" >&2
+    return 2
+    ;;
+  esac
+  export SIGGY_TARGET
+  compose build siggy
+  copy_from localhost/siggy:latest /out/siggy "$ROOT/dist/siggy"
+  chmod +x "$ROOT/dist/siggy"
+  exec "$ROOT/dist/siggy"
+}
+
+cmd_package() {
+  ensure_images
+  mkdir -p "$ROOT/dist"
+  SIGGY_TARGET=pack
+  export SIGGY_TARGET
+  compose build siggy
+  copy_from localhost/siggy:latest /dist/. "$ROOT/dist/"
+}
+
+menu_run "siggy  ·  build" \
+  "Build & run:cmd_run" \
+  "Build & package:cmd_package"

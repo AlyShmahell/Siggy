@@ -116,6 +116,9 @@ menu_run() {
   done
 
   MENU_ARGS=()
+  if [[ -z "${MENU_CLI_ITEM+x}" ]]; then
+    MENU_CLI_ITEM=()
+  fi
   if [[ ${#MENU_CLI_ITEM[@]} -gt 0 ]]; then
     chosen="${MENU_CLI_ITEM[0]}"
     MENU_ARGS=("${MENU_CLI_ITEM[@]:1}")

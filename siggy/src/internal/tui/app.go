@@ -94,6 +94,8 @@ type model struct {
 	form         providerForm
 	tab          settingsTab
 	tokensUsed   int
+	billedTokens int
+	billedEst    bool
 	mentions     []string
 	modelHealth  string
 	listOff      int
@@ -131,6 +133,9 @@ type model struct {
 	wsRoot   string
 	wsBrowse string
 	wsDirs   []string
+
+	imgSlots []imgSlot
+	imgCache map[string]imgCacheEntry
 }
 
 type evMsg loop.Event
@@ -195,6 +200,7 @@ func New(g *graph.Graph, h *harness.Harness, cfg *config.Config) model {
 		status:      "ready",
 		modelHealth: "…",
 		cursorOn:    true,
+		imgCache:    map[string]imgCacheEntry{},
 	}
 	m.scr.hits = m.hits
 	if h != nil && h.Workspace != nil {
@@ -465,6 +471,12 @@ func (m model) onEvent(ev loop.Event) (tea.Model, tea.Cmd) {
 		}
 		if ev.CompletionTokens > 0 {
 			m.compToks = ev.CompletionTokens
+		}
+		if n := loop.Billed(ev.PromptTokens, ev.CompletionTokens, ev.TotalTokens); n > 0 {
+			m.billedTokens += n
+		}
+		if ev.Estimated {
+			m.billedEst = true
 		}
 	}
 	m.syncView()

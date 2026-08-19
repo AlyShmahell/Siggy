@@ -73,3 +73,77 @@ func TestPlanBlocksWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoopPersistsAPIUsage(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	h, err := harness.New(root, home, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Session.Close()
+	reg := tools.Builtins(h, nil)
+	fake := &llm.Scripted{Steps: []llm.ScriptedStep{{
+		Text:  "hello",
+		Usage: llm.Usage{Prompt: 639, Completion: 4983, Total: 5622, Reasoning: 4000},
+	}}}
+	eng := New(fake, reg, h, "sys")
+	var usage Event
+	err = eng.Run(context.Background(), "hi", func(e Event) {
+		if e.Kind == KindUsage {
+			usage = e
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.PromptTokens != 639 || usage.TotalTokens != 5622 || usage.Estimated {
+		t.Fatalf("event = %#v", usage)
+	}
+	if usage.ReasoningTokens != 4000 {
+		t.Fatalf("reasoning = %d", usage.ReasoningTokens)
+	}
+	prompt, billed, est := SumUsage(h.Session.Records())
+	if prompt != 639 || billed != 5622 || est {
+		t.Fatalf("sum prompt=%d billed=%d est=%v", prompt, billed, est)
+	}
+	id := h.Session.ID
+	h.Session.Close()
+	opened, err := harness.OpenSession(home, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	prompt, billed, est = SumUsage(opened.Records())
+	if prompt != 639 || billed != 5622 || est {
+		t.Fatalf("reopen prompt=%d billed=%d est=%v", prompt, billed, est)
+	}
+}
+
+func TestLoopEstimatesMissingUsage(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	h, err := harness.New(root, home, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Session.Close()
+	reg := tools.Builtins(h, nil)
+	fake := &llm.Scripted{Steps: []llm.ScriptedStep{{Text: "ok"}}}
+	eng := New(fake, reg, h, "sys")
+	var usage Event
+	if err := eng.Run(context.Background(), "hi", func(e Event) {
+		if e.Kind == KindUsage {
+			usage = e
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !usage.Estimated || usage.TotalTokens <= 0 {
+		t.Fatalf("expected estimate, got %#v", usage)
+	}
+	_, billed, est := SumUsage(h.Session.Records())
+	if !est || billed != usage.TotalTokens {
+		t.Fatalf("persisted billed=%d est=%v", billed, est)
+	}
+}

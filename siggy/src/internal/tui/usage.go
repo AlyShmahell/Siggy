@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"siggy/src/internal/harness"
+	"siggy/src/internal/llm"
 	"siggy/src/internal/loop"
 )
 
@@ -26,11 +28,22 @@ func (m *model) usageUsed() int {
 		return m.tokensUsed
 	}
 	n := 0
+	var specs []llm.ToolSpec
 	if m.g != nil && m.g.Engine != nil {
-		n = loop.EstimateTokens(m.g.Engine.Messages)
+		if m.g.Engine.Tools != nil {
+			specs = m.g.Engine.Tools.Specs()
+		}
+		n = loop.EstimateRequest(m.g.Engine.Messages, specs)
 	}
 	n += utf8.RuneCountInString(m.ta.Value()) / 4
 	return n
+}
+
+func (m *model) applyUsageFromRecords(recs []harness.Record) {
+	prompt, billed, est := loop.SumUsage(recs)
+	m.tokensUsed = prompt
+	m.billedTokens = billed
+	m.billedEst = est
 }
 
 func usagePct(used, limit int) int {

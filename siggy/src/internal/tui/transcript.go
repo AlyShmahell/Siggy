@@ -48,6 +48,7 @@ func (m *model) loadTranscript(note string) {
 		recs = m.h.Session.Records()
 	}
 	m.lines = transcriptFromRecords(recs)
+	m.applyUsageFromRecords(recs)
 	if note != "" {
 		m.lines = append(m.lines, line{kind: "sys", text: note})
 	}

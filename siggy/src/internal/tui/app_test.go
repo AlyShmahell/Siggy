@@ -1712,14 +1712,17 @@ func TestUsageGaugeOpensCounts(t *testing.T) {
 		t.Fatalf("float = %d", nm.float)
 	}
 	plain := stripANSI(nm.View())
-	want := fmt.Sprintf("%d/%d", nm.usageUsed(), nm.contextWindow())
-	if !strings.Contains(plain, want) {
-		t.Fatalf("missing %q:\n%s", want, plain)
+	wantCtx := fmt.Sprintf("context %d / %d", nm.usageUsed(), nm.contextWindow())
+	if !strings.Contains(plain, wantCtx) {
+		t.Fatalf("missing %q:\n%s", wantCtx, plain)
+	}
+	if !strings.Contains(plain, "billed 0 this session") {
+		t.Fatalf("missing billed line:\n%s", plain)
 	}
 	nm.leaveSessionPage()
 	nm.page = pageSettings
 	plain = stripANSI(nm.View())
-	if strings.Contains(plain, want) {
+	if strings.Contains(plain, wantCtx) {
 		t.Fatalf("settings leaked usage popup:\n%s", plain)
 	}
 }
@@ -1749,5 +1752,74 @@ func TestSessionTitleAfterQA(t *testing.T) {
 	}
 	if strings.Contains(plain, untitledSession) {
 		t.Fatalf("still untitled:\n%s", plain)
+	}
+}
+
+func TestUsageSplitsContextAndBilled(t *testing.T) {
+	m := testModel(t)
+	next, _ := m.onEvent(loop.Event{Kind: loop.KindUsage, PromptTokens: 639, CompletionTokens: 4983, TotalTokens: 5622})
+	m = next.(model)
+	if m.tokensUsed != 639 {
+		t.Fatalf("context = %d", m.tokensUsed)
+	}
+	if m.billedTokens != 5622 {
+		t.Fatalf("billed = %d", m.billedTokens)
+	}
+	next, _ = m.onEvent(loop.Event{Kind: loop.KindUsage, PromptTokens: 800, CompletionTokens: 200, TotalTokens: 1000})
+	m = next.(model)
+	if m.tokensUsed != 800 {
+		t.Fatalf("context after second = %d", m.tokensUsed)
+	}
+	if m.billedTokens != 6622 {
+		t.Fatalf("billed after second = %d", m.billedTokens)
+	}
+	m.float = floatUsage
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "context 800 / 128000") {
+		t.Fatalf("popup missing context:\n%s", plain)
+	}
+	if !strings.Contains(plain, "billed 6622 this session") {
+		t.Fatalf("popup missing billed:\n%s", plain)
+	}
+}
+
+func TestUsageResumeRestoresBilled(t *testing.T) {
+	m := testModel(t)
+	if err := m.h.Session.Append(harness.Record{Type: "user", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.h.Session.Append(harness.Record{
+		Type:             "usage",
+		PromptTokens:     639,
+		CompletionTokens: 4983,
+		TotalTokens:      5622,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.loadTranscript("resumed")
+	if m.tokensUsed != 639 {
+		t.Fatalf("context = %d", m.tokensUsed)
+	}
+	if m.billedTokens != 5622 {
+		t.Fatalf("billed = %d", m.billedTokens)
+	}
+	m.float = floatUsage
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "context 639 / 128000") || !strings.Contains(plain, "billed 5622 this session") {
+		t.Fatalf("popup =\n%s", plain)
+	}
+}
+
+func TestUsageEstimatedFlag(t *testing.T) {
+	m := testModel(t)
+	next, _ := m.onEvent(loop.Event{Kind: loop.KindUsage, PromptTokens: 100, TotalTokens: 100, Estimated: true})
+	m = next.(model)
+	if !m.billedEst || m.billedTokens != 100 {
+		t.Fatalf("est=%v billed=%d", m.billedEst, m.billedTokens)
+	}
+	m.float = floatUsage
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "est") {
+		t.Fatalf("missing est marker:\n%s", plain)
 	}
 }

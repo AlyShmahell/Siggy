@@ -18,16 +18,18 @@ const (
 )
 
 type Event struct {
-	Kind         Kind
-	Text         string
-	Tool         string
-	CallID       string
-	Args         string
-	Err          error
-	Node         string
-	Mode         string
-	Approval     *harness.ApprovalRequest
+	Kind             Kind
+	Text             string
+	Tool             string
+	CallID           string
+	Args             string
+	Err              error
+	Node             string
+	Mode             string
+	Approval         *harness.ApprovalRequest
 	PromptTokens     int
 	CompletionTokens int
+	ReasoningTokens  int
 	TotalTokens      int
+	Estimated        bool
 }

@@ -11,11 +11,19 @@ import (
 )
 
 func (m *model) refresh() {
+	m.imgSlots = nil
 	var b strings.Builder
 	w := max(m.reg.transcript.W-2, 20)
+	lineNo := 0
 	for _, ln := range m.lines {
-		b.WriteString(m.renderLine(ln, w))
+		body, slots := m.renderLineSlots(ln, w)
+		for _, s := range slots {
+			s.contentLine += lineNo
+			m.imgSlots = append(m.imgSlots, s)
+		}
+		b.WriteString(body)
 		b.WriteByte('\n')
+		lineNo += strings.Count(body, "\n") + 1
 	}
 	content := b.String()
 	atBottom := m.vp.AtBottom()
@@ -28,30 +36,40 @@ func (m *model) refresh() {
 }
 
 func (m model) renderLine(ln line, width int) string {
+	s, _ := m.renderLineSlots(ln, width)
+	return s
+}
+
+func (m model) renderLineSlots(ln line, width int) (string, []imgSlot) {
 	inner := max(width-4, 12)
+	opts := richOpts{
+		graphics: kittyImagesEnabled(),
+		live:     m.running && ln.kind == "asst-live",
+		resolve:  m.resolveImage,
+	}
 	switch ln.kind {
 	case "user":
-		body := renderRich(ln.text, inner, false)
-		return lipgloss.PlaceHorizontal(width, lipgloss.Right, body)
+		body, slots := renderRichOpts(ln.text, inner, false, opts)
+		return lipgloss.PlaceHorizontal(width, lipgloss.Right, body), slots
 	case "asst-live":
-		body := renderRich(ln.text, inner, true)
+		body, slots := renderRichOpts(ln.text, inner, true, opts)
 		if ln.model != "" {
 			rate := int(ln.rate + 0.5)
 			foot := stMuted.Render(fmt.Sprintf("%s  ·  %d tok/s", ln.model, rate))
-			return lipgloss.JoinVertical(lipgloss.Left, body, foot)
+			return lipgloss.JoinVertical(lipgloss.Left, body, foot), slots
 		}
-		return body
+		return body, slots
 	case "tool":
 		head := truncate(formatToolCard(ln.tool, ln.text), inner)
-		return stToolCard.Width(min(inner+2, width)).Render(head)
+		return stToolCard.Width(min(inner+2, width)).Render(head), nil
 	case "diff":
-		return renderDiff(ln.text, inner)
+		return renderDiff(ln.text, inner), nil
 	case "ok":
-		return stOk.Render("  ↳ " + truncate(ln.text, inner))
+		return stOk.Render("  ↳ " + truncate(ln.text, inner)), nil
 	case "err":
-		return stErr.Render("  ↳ " + truncate(ln.text, inner))
+		return stErr.Render("  ↳ " + truncate(ln.text, inner)), nil
 	default:
-		return stSys.Render(ln.text)
+		return stSys.Render(ln.text), nil
 	}
 }
 
@@ -76,7 +94,11 @@ func (m model) View() string {
 		return "siggy"
 	}
 	m.layout()
-	return m.paint()
+	body := m.paint()
+	if ov := m.kittyOverlay(); ov != "" {
+		return body + ov
+	}
+	return body
 }
 
 func (m *model) ensureFrame() {
@@ -155,20 +177,25 @@ func (m *model) ensureFills(w, h, sideW int) {
 func (m *model) paintUsageFloat() {
 	used := m.usageUsed()
 	limit := m.contextWindow()
-	label := fmt.Sprintf(" %d/%d ", used, limit)
-	col := usageColor(used, limit)
-	st := lipgloss.NewStyle().Foreground(col).Background(colPanel)
-	inner := label
-	w := lipgloss.Width(inner)
+	ctxLine := fmt.Sprintf(" context %d / %d ", used, limit)
+	billLine := fmt.Sprintf(" billed %d this session ", m.billedTokens)
+	if m.billedEst {
+		billLine = fmt.Sprintf(" billed %d this session · est ", m.billedTokens)
+	}
+	w := max(lipgloss.Width(ctxLine), lipgloss.Width(billLine))
 	if w < 7 {
-		inner = padPlain(inner, 7)
 		w = 7
 	}
+	ctxLine = padUsageLine(ctxLine, w)
+	billLine = padUsageLine(billLine, w)
+	col := usageColor(used, limit)
+	st := lipgloss.NewStyle().Foreground(col).Background(colPanel)
 	top := st.Render("┌" + strings.Repeat("─", w) + "┐")
-	mid := st.Render("│") + st.Bold(true).Render(inner) + st.Render("│")
+	mid1 := st.Render("│") + st.Bold(true).Render(ctxLine) + st.Render("│")
+	mid2 := st.Render("│") + st.Render(billLine) + st.Render("│")
 	bot := st.Render("└" + strings.Repeat("─", w) + "┘")
-	boxW := lipgloss.Width(mid)
-	boxH := 3
+	boxW := lipgloss.Width(mid1)
+	boxH := 4
 	ux := m.reg.usage.X + m.reg.usage.W - boxW
 	if ux < 0 {
 		ux = 0
@@ -185,8 +212,17 @@ func (m *model) paintUsageFloat() {
 	m.hits.Add(Target{Kind: KindNone, Rect: m.reg.modal})
 	m.hits.Add(Target{Kind: KindUsage, Rect: m.reg.usage})
 	m.scr.blit(ux, uy, top)
-	m.scr.blit(ux, uy+1, mid)
-	m.scr.blit(ux, uy+2, bot)
+	m.scr.blit(ux, uy+1, mid1)
+	m.scr.blit(ux, uy+2, mid2)
+	m.scr.blit(ux, uy+3, bot)
+}
+
+func padUsageLine(s string, w int) string {
+	n := lipgloss.Width(s)
+	if n >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-n)
 }
 
 func (m *model) paintNav() {

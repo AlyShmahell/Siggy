@@ -10,6 +10,7 @@ type Scripted struct {
 type ScriptedStep struct {
 	Text  string
 	Calls []ToolCall
+	Usage Usage
 	Err   error
 }
 
@@ -34,6 +35,9 @@ func (s *Scripted) Stream(_ context.Context, _ Request) (<-chan Chunk, error) {
 		}
 		if len(step.Calls) > 0 {
 			ch <- Chunk{ToolCalls: step.Calls}
+		}
+		if step.Usage.Prompt > 0 || step.Usage.Completion > 0 || step.Usage.Total > 0 {
+			ch <- Chunk{Usage: step.Usage}
 		}
 		ch <- Chunk{Done: true}
 	}()

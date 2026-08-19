@@ -310,3 +310,50 @@ func TestTableSepIsNotHR(t *testing.T) {
 		t.Fatalf("list marker leaked: %q", got)
 	}
 }
+
+func TestParseMarkdownImage(t *testing.T) {
+	segs := parseMarkdown("see ![diagram](foo.png) here")
+	var img mdSeg
+	found := false
+	for _, s := range segs {
+		if s.kind == mdImage {
+			img = s
+			found = true
+		}
+	}
+	if !found || img.text != "diagram" || img.lang != "foo.png" {
+		t.Fatalf("segs = %#v", segs)
+	}
+	link := parseMarkdown("see [](foo.png)")
+	for _, s := range link {
+		if s.kind == mdImage {
+			t.Fatalf("bare link became image: %#v", link)
+		}
+	}
+	remote := parseMarkdown("![x](https://ex.com/a.png)")
+	for _, s := range remote {
+		if s.kind == mdImage {
+			t.Fatalf("remote became image: %#v", remote)
+		}
+	}
+	src := "```\n![x](foo.png)\n```"
+	fences := parseMarkdown(src)
+	if len(fences) != 1 || fences[0].kind != mdFence {
+		t.Fatalf("fence = %#v", fences)
+	}
+	if !strings.Contains(fences[0].text, "![x](foo.png)") {
+		t.Fatalf("fence body = %#v", fences[0])
+	}
+}
+
+func TestRenderImageCaptionNoAPC(t *testing.T) {
+	forceColor(t)
+	got := renderRich("![diagram](foo.png)", 40, true)
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "diagram") {
+		t.Fatalf("missing caption: %q", plain)
+	}
+	if strings.Contains(got, "\x1b_G") {
+		t.Fatalf("APC leaked: %q", got)
+	}
+}

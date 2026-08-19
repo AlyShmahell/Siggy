@@ -27,23 +27,28 @@ type TodoSnap struct {
 }
 
 type Record struct {
-	Seq         int           `json:"seq,omitempty"`
-	Type        string        `json:"type"`
-	Role        string        `json:"role,omitempty"`
-	Text        string        `json:"text,omitempty"`
-	Tool        string        `json:"tool,omitempty"`
-	CallID      string        `json:"call_id,omitempty"`
-	Args        string        `json:"args,omitempty"`
-	Result      string        `json:"result,omitempty"`
-	ToolCalls   []ToolCallRec `json:"tool_calls,omitempty"`
-	From        int           `json:"from,omitempty"`
-	To          int           `json:"to,omitempty"`
-	ReplacesSeq int           `json:"replaces_seq,omitempty"`
-	Path        string        `json:"path,omitempty"`
-	Mode        string        `json:"mode,omitempty"`
-	Node        string        `json:"node,omitempty"`
-	Todos       []TodoSnap    `json:"todos,omitempty"`
-	At          string        `json:"at"`
+	Seq              int           `json:"seq,omitempty"`
+	Type             string        `json:"type"`
+	Role             string        `json:"role,omitempty"`
+	Text             string        `json:"text,omitempty"`
+	Tool             string        `json:"tool,omitempty"`
+	CallID           string        `json:"call_id,omitempty"`
+	Args             string        `json:"args,omitempty"`
+	Result           string        `json:"result,omitempty"`
+	ToolCalls        []ToolCallRec `json:"tool_calls,omitempty"`
+	From             int           `json:"from,omitempty"`
+	To               int           `json:"to,omitempty"`
+	ReplacesSeq      int           `json:"replaces_seq,omitempty"`
+	Path             string        `json:"path,omitempty"`
+	Mode             string        `json:"mode,omitempty"`
+	Node             string        `json:"node,omitempty"`
+	Todos            []TodoSnap    `json:"todos,omitempty"`
+	PromptTokens     int           `json:"prompt_tokens,omitempty"`
+	CompletionTokens int           `json:"completion_tokens,omitempty"`
+	ReasoningTokens  int           `json:"reasoning_tokens,omitempty"`
+	TotalTokens      int           `json:"total_tokens,omitempty"`
+	Estimated        bool          `json:"estimated,omitempty"`
+	At               string        `json:"at"`
 }
 
 type SessionMeta = store.Meta

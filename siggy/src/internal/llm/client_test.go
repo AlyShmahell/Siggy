@@ -108,6 +108,37 @@ func TestHTTPStreamUsage(t *testing.T) {
 	}
 }
 
+func TestHTTPStreamReasoningUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":639,\"completion_tokens\":4983,\"total_tokens\":5622,\"completion_tokens_details\":{\"reasoning_tokens\":4000}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(srv.URL, "k", "m")
+	ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: "x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Usage
+	for chunk := range ch {
+		if chunk.Usage.Total > 0 {
+			got = chunk.Usage
+		}
+	}
+	if got.Prompt != 639 || got.Completion != 4983 || got.Total != 5622 {
+		t.Fatalf("usage = %#v", got)
+	}
+	if got.Reasoning != 4000 {
+		t.Fatalf("reasoning = %d", got.Reasoning)
+	}
+	if got.Total != 5622 {
+		t.Fatal("reasoning must not be added on top of total")
+	}
+}
+
 func TestFake(t *testing.T) {
 	s := &Scripted{Steps: []ScriptedStep{{Text: "ok"}}}
 	ch, err := s.Stream(context.Background(), Request{})

@@ -62,6 +62,36 @@ func TestDerivePruneReplacement(t *testing.T) {
 	}
 }
 
+func TestDeriveMessagesIgnoresUsage(t *testing.T) {
+	recs := []harness.Record{
+		{Seq: 1, Type: "user", Text: "hi"},
+		{Seq: 2, Type: "usage", PromptTokens: 639, CompletionTokens: 4983, TotalTokens: 5622},
+		{Seq: 3, Type: "assistant", Text: "hello"},
+	}
+	msgs := DeriveMessages(recs)
+	joined := joinContents(msgs)
+	if strings.Contains(joined, "639") || strings.Contains(joined, "usage") {
+		t.Fatalf("usage leaked into messages: %#v", msgs)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("msgs = %#v", msgs)
+	}
+}
+
+func TestEstimateRequestIncludesTools(t *testing.T) {
+	msgs := []llm.Message{{Role: llm.RoleUser, Content: "abcd"}}
+	base := EstimateTokens(msgs)
+	specs := []llm.ToolSpec{{
+		Name:        "read_file",
+		Description: strings.Repeat("d", 40),
+		Parameters:  []byte(strings.Repeat("p", 40)),
+	}}
+	got := EstimateRequest(msgs, specs)
+	if got <= base {
+		t.Fatalf("tools not counted: base=%d got=%d", base, got)
+	}
+}
+
 func joinContents(msgs []llm.Message) string {
 	var b strings.Builder
 	for _, m := range msgs {

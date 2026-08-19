@@ -13,13 +13,13 @@ import (
 const MaxTurns = 24
 
 type Engine struct {
-	LLM            llm.Client
-	Tools          *tools.Registry
-	Harness        *harness.Harness
-	Messages       []llm.Message
-	ContextWindow  int
-	LastPrompt     int
-	CompactFails   int
+	LLM           llm.Client
+	Tools         *tools.Registry
+	Harness       *harness.Harness
+	Messages      []llm.Message
+	ContextWindow int
+	LastPrompt    int
+	CompactFails  int
 }
 
 func New(client llm.Client, reg *tools.Registry, h *harness.Harness, system string) *Engine {
@@ -33,6 +33,10 @@ func New(client llm.Client, reg *tools.Registry, h *harness.Harness, system stri
 
 func (e *Engine) Restore(records []harness.Record) {
 	e.Messages = DeriveMessages(records)
+	prompt, _, _ := SumUsage(records)
+	if prompt > 0 {
+		e.LastPrompt = prompt
+	}
 }
 
 func (e *Engine) CompactNow(ctx context.Context, emit func(Event), fast bool) {
@@ -93,12 +97,17 @@ func (e *Engine) Run(ctx context.Context, user string, emit func(Event)) error {
 }
 
 func (e *Engine) streamOnce(ctx context.Context, emit func(Event)) (string, []llm.ToolCall, error) {
-	ch, err := e.LLM.Stream(ctx, llm.Request{Messages: e.Messages, Tools: e.Tools.Specs()})
+	var specs []llm.ToolSpec
+	if e.Tools != nil {
+		specs = e.Tools.Specs()
+	}
+	ch, err := e.LLM.Stream(ctx, llm.Request{Messages: e.Messages, Tools: specs})
 	if err != nil {
 		return "", nil, err
 	}
 	var text string
 	var calls []llm.ToolCall
+	var got llm.Usage
 	for chunk := range ch {
 		if chunk.Err != nil {
 			return text, calls, chunk.Err
@@ -107,17 +116,56 @@ func (e *Engine) streamOnce(ctx context.Context, emit func(Event)) (string, []ll
 			text += chunk.Text
 			emit(Event{Kind: KindText, Text: chunk.Text})
 		}
-		if chunk.Usage.Prompt > 0 {
-			e.LastPrompt = chunk.Usage.Prompt
-			emit(Event{Kind: KindUsage, PromptTokens: chunk.Usage.Prompt, CompletionTokens: chunk.Usage.Completion, TotalTokens: chunk.Usage.Total})
-		} else if chunk.Usage.Total > 0 || chunk.Usage.Completion > 0 {
-			emit(Event{Kind: KindUsage, PromptTokens: chunk.Usage.Prompt, CompletionTokens: chunk.Usage.Completion, TotalTokens: chunk.Usage.Total})
+		if usageFromChunk(chunk.Usage) {
+			got = chunk.Usage
+			if got.Prompt > 0 {
+				e.LastPrompt = got.Prompt
+			}
 		}
 		if len(chunk.ToolCalls) > 0 {
 			calls = append(calls, chunk.ToolCalls...)
 		}
 	}
+	e.finishUsage(got, specs, emit)
 	return text, calls, nil
+}
+
+func (e *Engine) estimatePrompt(specs []llm.ToolSpec) int {
+	return EstimateRequest(e.Messages, specs)
+}
+
+func (e *Engine) finishUsage(got llm.Usage, specs []llm.ToolSpec, emit func(Event)) {
+	estimated := false
+	if !usageFromChunk(got) {
+		n := e.estimatePrompt(specs)
+		got.Prompt = n
+		got.Total = n
+		estimated = true
+	}
+	if got.Total == 0 {
+		got.Total = got.Prompt + got.Completion
+	}
+	if got.Prompt > 0 {
+		e.LastPrompt = got.Prompt
+	}
+	if e.Harness != nil && e.Harness.Session != nil {
+		_ = e.Harness.Session.Append(harness.Record{
+			Type:             "usage",
+			PromptTokens:     got.Prompt,
+			CompletionTokens: got.Completion,
+			ReasoningTokens:  got.Reasoning,
+			TotalTokens:      got.Total,
+			Estimated:        estimated,
+		})
+	}
+	emit(Event{
+		Kind:             KindUsage,
+		PromptTokens:     got.Prompt,
+		CompletionTokens: got.Completion,
+		ReasoningTokens:  got.Reasoning,
+		TotalTokens:      got.Total,
+		Estimated:        estimated,
+	})
 }
 
 func RewindRecords(recs []harness.Record, throughSeq int) harness.Record {

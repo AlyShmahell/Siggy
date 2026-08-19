@@ -73,7 +73,11 @@ func (e *Engine) tokenUsed() int {
 	if e.LastPrompt > 0 {
 		return e.LastPrompt
 	}
-	return EstimateTokens(e.Messages)
+	var specs []llm.ToolSpec
+	if e.Tools != nil {
+		specs = e.Tools.Specs()
+	}
+	return EstimateRequest(e.Messages, specs)
 }
 
 func (e *Engine) maybeCompact(ctx context.Context, emit func(Event), forceFast, forceLLM bool) {
@@ -94,7 +98,7 @@ func (e *Engine) maybeCompact(ctx context.Context, emit func(Event), forceFast, 
 		return
 	}
 	if forceLLM || used >= th.Auto {
-		if err := e.summarize(ctx); err != nil {
+		if err := e.summarize(ctx, emit); err != nil {
 			e.CompactFails++
 			return
 		}
@@ -190,7 +194,10 @@ func isMemoryRead(r harness.Record, memDir string) bool {
 	return strings.Contains(p, "memory/") || strings.HasPrefix(p, "memory")
 }
 
-func (e *Engine) summarize(ctx context.Context) error {
+func (e *Engine) summarize(ctx context.Context, emit func(Event)) error {
+	if emit == nil {
+		emit = func(Event) {}
+	}
 	recs := e.Harness.Session.Records()
 	msgs := DeriveMessages(recs)
 	if len(msgs) < 4 {
@@ -209,10 +216,18 @@ func (e *Engine) summarize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	text, _, err := llm.Collect(ch)
-	if err != nil {
-		return err
+	var text string
+	var got llm.Usage
+	for chunk := range ch {
+		if chunk.Err != nil {
+			return chunk.Err
+		}
+		text += chunk.Text
+		if usageFromChunk(chunk.Usage) {
+			got = chunk.Usage
+		}
 	}
+	e.finishUsage(got, nil, emit)
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("empty compact summary")
@@ -243,7 +258,7 @@ func compactRange(recs []harness.Record) (from, to int) {
 		}
 	}
 	for _, r := range recs {
-		if r.Type == "system" || r.Type == "compact" || r.Type == "rewind" || r.Type == "checkpoint" || r.Type == "todo" || r.Type == "prune" {
+		if r.Type == "system" || r.Type == "compact" || r.Type == "rewind" || r.Type == "checkpoint" || r.Type == "todo" || r.Type == "prune" || r.Type == "usage" {
 			continue
 		}
 		if shadowed[r.Seq] {

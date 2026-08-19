@@ -107,7 +107,7 @@ func TestCompactAppendsWithoutDeleting(t *testing.T) {
 	fake := &llm.Scripted{Steps: []llm.ScriptedStep{{Text: "## Primary Request and Intent\n- second"}}}
 	eng := New(fake, tools.Builtins(h, nil), h, "sys")
 	eng.Restore(h.Session.Records())
-	if err := eng.summarize(context.Background()); err != nil {
+	if err := eng.summarize(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	recs := h.Session.Records()

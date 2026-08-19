@@ -50,6 +50,7 @@ type Request struct {
 type Usage struct {
 	Prompt     int
 	Completion int
+	Reasoning  int
 	Total      int
 }
 

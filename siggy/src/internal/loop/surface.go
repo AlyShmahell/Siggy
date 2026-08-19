@@ -52,7 +52,7 @@ func DeriveMessages(records []harness.Record) []llm.Message {
 		if r.Type == "compact" && r.Text != "" {
 			continue
 		}
-		if r.Type == "rewind" || r.Type == "checkpoint" || r.Type == "todo" || r.Type == "prune" {
+		if r.Type == "rewind" || r.Type == "checkpoint" || r.Type == "todo" || r.Type == "prune" || r.Type == "usage" {
 			continue
 		}
 		if shadowed[r.Seq] {
@@ -149,12 +149,22 @@ func dropEmpty(msgs []llm.Message) []llm.Message {
 }
 
 func EstimateTokens(msgs []llm.Message) int {
+	return EstimateRequest(msgs, nil)
+}
+
+func EstimateRequest(msgs []llm.Message, tools []llm.ToolSpec) int {
 	n := 0
 	for _, m := range msgs {
 		n += utf8.RuneCountInString(m.Content)
 		for _, tc := range m.ToolCalls {
+			n += utf8.RuneCountInString(tc.Name)
 			n += utf8.RuneCountInString(string(tc.Args))
 		}
+	}
+	for _, t := range tools {
+		n += utf8.RuneCountInString(t.Name)
+		n += utf8.RuneCountInString(t.Description)
+		n += utf8.RuneCountInString(string(t.Parameters))
 	}
 	return n / 4
 }

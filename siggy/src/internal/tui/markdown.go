@@ -20,6 +20,7 @@ const (
 	mdItalic
 	mdHR
 	mdTable
+	mdImage
 )
 
 type mdSeg struct {
@@ -39,7 +40,7 @@ func parseMarkdown(s string) []mdSeg {
 		if prose.Len() == 0 {
 			return
 		}
-		out = append(out, expandEmphasis(parseInline(prose.String()))...)
+		out = append(out, expandImages(expandEmphasis(parseInline(prose.String())))...)
 		prose.Reset()
 	}
 	for i := 0; i < len(lines); {
@@ -412,6 +413,90 @@ func expandEmphasis(segs []mdSeg) []mdSeg {
 	return out
 }
 
+func expandImages(segs []mdSeg) []mdSeg {
+	var out []mdSeg
+	for _, s := range segs {
+		if s.kind != mdProse {
+			out = append(out, s)
+			continue
+		}
+		out = append(out, parseImages(s.text)...)
+	}
+	return out
+}
+
+func parseImages(s string) []mdSeg {
+	if s == "" {
+		return nil
+	}
+	r := []rune(s)
+	var out []mdSeg
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		out = append(out, mdSeg{kind: mdProse, text: cur.String()})
+		cur.Reset()
+	}
+	for i := 0; i < len(r); {
+		if r[i] != '!' || i+1 >= len(r) || r[i+1] != '[' {
+			cur.WriteRune(r[i])
+			i++
+			continue
+		}
+		j := i + 2
+		for j < len(r) && r[j] != ']' && r[j] != '\n' {
+			j++
+		}
+		if j >= len(r) || r[j] != ']' || j+1 >= len(r) || r[j+1] != '(' {
+			cur.WriteRune(r[i])
+			i++
+			continue
+		}
+		k := j + 2
+		for k < len(r) && r[k] != ')' && r[k] != '\n' {
+			k++
+		}
+		if k >= len(r) || r[k] != ')' {
+			cur.WriteRune(r[i])
+			i++
+			continue
+		}
+		alt := string(r[i+2 : j])
+		path := strings.TrimSpace(string(r[j+2 : k]))
+		if path == "" || remoteImagePath(path) {
+			cur.WriteRune(r[i])
+			i++
+			continue
+		}
+		flush()
+		out = append(out, mdSeg{kind: mdImage, text: alt, lang: path})
+		i = k + 1
+	}
+	flush()
+	if len(out) == 0 {
+		return []mdSeg{{kind: mdProse, text: s}}
+	}
+	return out
+}
+
+func remoteImagePath(p string) bool {
+	l := strings.ToLower(strings.TrimSpace(p))
+	return strings.Contains(l, "://") || strings.HasPrefix(l, "data:")
+}
+
+func imageCaption(alt, path string) string {
+	alt = strings.TrimSpace(alt)
+	if alt != "" {
+		return alt
+	}
+	if path == "" {
+		return "[image]"
+	}
+	return "[image: " + path + "]"
+}
+
 func parseEmphasis(s string) []mdSeg {
 	if s == "" {
 		return nil
@@ -484,20 +569,40 @@ func parseEmphasis(s string) []mdSeg {
 }
 
 func renderRich(text string, inner int, asst bool) string {
+	s, _ := renderRichOpts(text, inner, asst, richOpts{})
+	return s
+}
+
+type richOpts struct {
+	graphics bool
+	live     bool
+	resolve  func(string) (string, bool)
+}
+
+func renderRichOpts(text string, inner int, asst bool, opts richOpts) (string, []imgSlot) {
 	segs := expandLatex(parseMarkdown(text))
 	if len(segs) == 0 {
 		if asst {
-			return stAsstBubble.Render("")
+			return stAsstBubble.Render(""), nil
 		}
-		return stUserBubble.Render("")
+		return stUserBubble.Render(""), nil
 	}
 	var blocks []string
 	var run []mdSeg
+	var slots []imgSlot
+	used := 0
+	add := func(block string) {
+		if block == "" {
+			return
+		}
+		blocks = append(blocks, block)
+		used += strings.Count(block, "\n") + 1
+	}
 	paint := func(body string) {
 		if asst {
-			blocks = append(blocks, stAsstBubble.Render(body))
+			add(stAsstBubble.Render(body))
 		} else {
-			blocks = append(blocks, body)
+			add(body)
 		}
 	}
 	flush := func() {
@@ -508,13 +613,13 @@ func renderRich(text string, inner int, asst bool) string {
 		run = nil
 	}
 	inline := func(text string) string {
-		return renderInlineWrap(expandLatex(expandEmphasis(parseInline(text))), inner)
+		return renderInlineWrap(expandLatex(expandImages(expandEmphasis(parseInline(text)))), inner)
 	}
 	for _, s := range segs {
 		switch s.kind {
 		case mdFence:
 			flush()
-			blocks = append(blocks, renderFence(s, inner))
+			add(renderFence(s, inner))
 		case mdHeading:
 			flush()
 			paint(stHeading.Render(inline(s.text)))
@@ -534,6 +639,15 @@ func renderRich(text string, inner int, asst bool) string {
 		case mdTable:
 			flush()
 			paint(renderTable(s, inner, inline))
+		case mdImage:
+			flush()
+			body, slot := formatImageBlock(s, inner, opts)
+			start := used
+			paint(body)
+			if slot != nil {
+				slot.contentLine = start + 1
+				slots = append(slots, *slot)
+			}
 		default:
 			run = append(run, s)
 		}
@@ -541,9 +655,34 @@ func renderRich(text string, inner int, asst bool) string {
 	flush()
 	joined := strings.Join(blocks, "\n")
 	if asst {
-		return joined
+		return joined, slots
 	}
-	return stUserBubble.Render(joined)
+	return stUserBubble.Render(joined), slots
+}
+
+func formatImageBlock(s mdSeg, inner int, opts richOpts) (string, *imgSlot) {
+	cap := imageCaption(s.text, s.lang)
+	abs, ok := "", false
+	if opts.resolve != nil {
+		abs, ok = opts.resolve(s.lang)
+	}
+	if !opts.graphics || !ok {
+		return cap, nil
+	}
+	cols := max(inner, 8)
+	var b strings.Builder
+	b.WriteString(cap)
+	for i := 0; i < imgReserveRows; i++ {
+		b.WriteByte('\n')
+		b.WriteByte(' ')
+	}
+	return b.String(), &imgSlot{
+		path: s.lang,
+		abs:  abs,
+		cols: cols,
+		rows: imgReserveRows,
+		live: opts.live,
+	}
 }
 
 func renderTable(s mdSeg, inner int, inline func(string) string) string {
@@ -730,6 +869,10 @@ func renderInlineWrap(segs []mdSeg, inner int) string {
 			if s.lang == "display" {
 				flush()
 			}
+			continue
+		}
+		if s.kind == mdImage {
+			writeAtomic(imageCaption(s.text, s.lang), &stMuted)
 			continue
 		}
 		switch s.kind {

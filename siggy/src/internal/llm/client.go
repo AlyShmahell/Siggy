@@ -98,9 +98,14 @@ type oaiStreamOptions struct {
 }
 
 type oaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int              `json:"prompt_tokens"`
+	CompletionTokens        int              `json:"completion_tokens"`
+	TotalTokens             int              `json:"total_tokens"`
+	CompletionTokensDetails *oaiUsageDetails `json:"completion_tokens_details"`
+}
+
+type oaiUsageDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 type oaiRequest struct {
@@ -238,11 +243,15 @@ func (c *HTTPClient) readStream(r io.Reader, out chan<- Chunk) {
 			return
 		}
 		if chunk.Usage != nil {
-			out <- Chunk{Usage: Usage{
+			u := Usage{
 				Prompt:     chunk.Usage.PromptTokens,
 				Completion: chunk.Usage.CompletionTokens,
 				Total:      chunk.Usage.TotalTokens,
-			}}
+			}
+			if chunk.Usage.CompletionTokensDetails != nil {
+				u.Reasoning = chunk.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+			out <- Chunk{Usage: u}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
